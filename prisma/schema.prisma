@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Balance {
+  id            String  @id
+  employeeId    String  @map("employee_id")
+  locationId    String  @map("location_id")
+  availableDays Int     @map("available_days")
+  sourceVersion String? @map("source_version")
+  lastSyncedAt  String  @map("last_synced_at")
+  createdAt     String  @map("created_at")
+  updatedAt     String  @map("updated_at")
+
+  @@unique([employeeId, locationId])
+  @@map("balances")
+}
+
+model TimeOffRequest {
+  id                     String                @id
+  employeeId             String                @map("employee_id")
+  locationId             String                @map("location_id")
+  requestedDays          Int                   @map("requested_days")
+  status                 String
+  idempotencyKey         String?               @unique(map: "idx_time_off_requests_idempotency_key") @map("idempotency_key")
+  idempotencyPayloadHash String?               @map("idempotency_payload_hash")
+  hcmTransactionId       String?               @map("hcm_transaction_id")
+  failureCode            String?               @map("failure_code")
+  failureReason          String?               @map("failure_reason")
+  createdAt              String                @map("created_at")
+  updatedAt              String                @map("updated_at")
+  approvedAt             String?               @map("approved_at")
+  rejectedAt             String?               @map("rejected_at")
+  audits                 HcmTransactionAudit[]
+
+  @@map("time_off_requests")
+}
+
+model HcmTransactionAudit {
+  id                String         @id
+  timeOffRequestId  String         @map("time_off_request_id")
+  externalRequestId String         @unique @map("external_request_id")
+  hcmTransactionId  String?        @map("hcm_transaction_id")
+  operation         String
+  status            String
+  attemptedAt       String         @map("attempted_at")
+  completedAt       String?        @map("completed_at")
+  errorCode         String?        @map("error_code")
+  errorMessage      String?        @map("error_message")
+  timeOffRequest    TimeOffRequest @relation(fields: [timeOffRequestId], references: [id], onDelete: Restrict)
+
+  @@index([timeOffRequestId], map: "idx_hcm_transaction_audits_time_off_request_id")
+  @@map("hcm_transaction_audits")
+}
+
+model ReconciliationRun {
+  id            String  @id
+  sourceVersion String  @unique @map("source_version")
+  effectiveAt   String  @map("effective_at")
+  receivedCount Int     @map("received_count")
+  insertedCount Int     @map("inserted_count")
+  updatedCount  Int     @map("updated_count")
+  ignoredCount  Int     @map("ignored_count")
+  rejectedCount Int     @map("rejected_count")
+  errorCount    Int     @map("error_count")
+  status        String
+  startedAt     String  @map("started_at")
+  completedAt   String? @map("completed_at")
+
+  @@index([effectiveAt], map: "idx_reconciliation_runs_effective_at")
+  @@map("reconciliation_runs")
+}
