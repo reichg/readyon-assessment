@@ -1,19 +1,19 @@
-import type { ReconciliationRun as PrismaReconciliationRun } from "@prisma/client";
 import { Inject, Injectable } from "@nestjs/common";
+import type { ReconciliationRun as PrismaReconciliationRun } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { DatabaseService } from "../database/database.service";
+import type { ReconciliationRunStatus } from "../reconciliation/shapes/reconciliation-run-status";
 import { getDurationMs } from "../telemetry/telemetry.helpers";
 import { TelemetryService } from "../telemetry/telemetry.service";
-import type { ReconciliationRunStatus } from "../reconciliation/shapes/reconciliation-run-status";
+import {
+  classifyPersistenceError,
+  translatePersistenceError,
+} from "./persistence.errors";
 import type {
   CompleteReconciliationRunInput,
   ReconciliationRunRecord,
   StartReconciliationRunInput,
 } from "./shapes/reconciliation-run.types";
-import {
-  classifyPersistenceError,
-  translatePersistenceError,
-} from "./persistence.errors";
 
 @Injectable()
 export class ReconciliationRunRepository {
@@ -159,6 +159,17 @@ export class ReconciliationRunRepository {
   async findLatestRun(): Promise<ReconciliationRunRecord | null> {
     const run = await this.databaseService.reconciliationRun.findFirst({
       orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+    });
+
+    return run ? toReconciliationRunRecord(run) : null;
+  }
+
+  async findLatestCompletedRun(): Promise<ReconciliationRunRecord | null> {
+    const run = await this.databaseService.reconciliationRun.findFirst({
+      where: {
+        status: "COMPLETED",
+      },
+      orderBy: [{ effectiveAt: "desc" }, { startedAt: "desc" }, { id: "desc" }],
     });
 
     return run ? toReconciliationRunRecord(run) : null;

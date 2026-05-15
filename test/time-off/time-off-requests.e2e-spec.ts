@@ -128,6 +128,10 @@ describe("TimeOffRequests (e2e)", () => {
           code: "IDEMPOTENCY_KEY_CONFLICT",
           message:
             "Idempotency key was reused with a different request payload.",
+          details: {
+            operation: "CREATE_TIME_OFF_REQUEST",
+            reason: "PAYLOAD_MISMATCH",
+          },
         },
       });
   });
@@ -161,6 +165,13 @@ describe("TimeOffRequests (e2e)", () => {
           code: "INSUFFICIENT_BALANCE",
           message:
             "Available balance is insufficient for the requested time off.",
+          details: {
+            employeeId: "emp_123",
+            locationId: "loc_001",
+            requestedDays: 2,
+            availableDays: 1,
+            source: "LOCAL_PROJECTION",
+          },
         },
       });
 
@@ -222,9 +233,9 @@ describe("TimeOffRequests (e2e)", () => {
               }),
             }),
           );
-          expect(responseBody.error.details).toEqual(
-            expect.arrayContaining([detail]),
-          );
+          expect(responseBody.error.details).toEqual({
+            violations: expect.arrayContaining([detail]),
+          });
         });
     },
   );
@@ -241,6 +252,9 @@ describe("TimeOffRequests (e2e)", () => {
         error: {
           code: "TIME_OFF_REQUEST_NOT_FOUND",
           message: "Time off request was not found.",
+          details: {
+            requestId: "missing-request",
+          },
         },
       });
   });
@@ -295,6 +309,47 @@ describe("TimeOffRequests (e2e)", () => {
       });
   });
 
+  it("returns the approved request on approval replay without a second HCM deduction", async () => {
+    if (!app) {
+      throw new Error("Test application did not initialize.");
+    }
+
+    mockHcmService.reset(
+      createMockHcmSeedState({
+        balances: [createMockHcmBalance({ availableDays: 10 })],
+      }),
+    );
+
+    const createResponse = await request(app.getHttpServer())
+      .post("/time-off-requests")
+      .send({
+        employeeId: "emp_123",
+        locationId: "loc_001",
+        requestedDays: 2,
+      })
+      .expect(201);
+
+    const approvedResponse = await request(app.getHttpServer())
+      .post(`/time-off-requests/${createResponse.body.id}/approve`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${createResponse.body.id}/approve`)
+      .expect(200)
+      .expect(approvedResponse.body);
+
+    expect(
+      mockHcmService.getBalance({
+        employeeId: "emp_123",
+        locationId: "loc_001",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        availableDays: 8,
+      }),
+    );
+  });
+
   it("returns an approval rejection when HCM reports insufficient balance", async () => {
     if (!app) {
       throw new Error("Test application did not initialize.");
@@ -323,6 +378,13 @@ describe("TimeOffRequests (e2e)", () => {
           code: "INSUFFICIENT_BALANCE",
           message:
             "Available balance is insufficient for the requested time off.",
+          details: {
+            employeeId: "emp_123",
+            locationId: "loc_001",
+            requestedDays: 2,
+            availableDays: 1,
+            source: "HCM",
+          },
         },
       });
 
@@ -376,6 +438,12 @@ describe("TimeOffRequests (e2e)", () => {
         error: {
           code: "INVALID_EMPLOYEE_LOCATION",
           message: "Employee and location were not found in HCM.",
+          details: {
+            requestId: createResponse.body.id,
+            employeeId: "emp_missing",
+            locationId: "loc_missing",
+            operation: "APPROVE_TIME_OFF",
+          },
         },
       });
 
@@ -423,6 +491,10 @@ describe("TimeOffRequests (e2e)", () => {
         error: {
           code: "HCM_UNAVAILABLE",
           message: "HCM is temporarily unavailable.",
+          details: {
+            requestId: createResponse.body.id,
+            operation: "APPROVE_TIME_OFF",
+          },
         },
       });
 
@@ -438,8 +510,71 @@ describe("TimeOffRequests (e2e)", () => {
         error: {
           code: "BALANCE_NOT_FOUND",
           message: "Balance projection was not found.",
+          details: {
+            employeeId: "emp_123",
+            locationId: "loc_001",
+          },
         },
       });
+  });
+
+  it("approves successfully on retry after transient HCM unavailability without double deduction", async () => {
+    if (!app) {
+      throw new Error("Test application did not initialize.");
+    }
+
+    mockHcmService.reset(
+      createMockHcmSeedState({
+        balances: [createMockHcmBalance({ availableDays: 10 })],
+      }),
+    );
+
+    const createResponse = await request(app.getHttpServer())
+      .post("/time-off-requests")
+      .send({
+        employeeId: "emp_123",
+        locationId: "loc_001",
+        requestedDays: 2,
+      })
+      .expect(201);
+
+    mockHcmService.scheduleTransientFailure("SUBMIT_TIME_OFF");
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${createResponse.body.id}/approve`)
+      .expect(503)
+      .expect({
+        error: {
+          code: "HCM_UNAVAILABLE",
+          message: "HCM is temporarily unavailable.",
+          details: {
+            requestId: createResponse.body.id,
+            operation: "APPROVE_TIME_OFF",
+          },
+        },
+      });
+
+    const retryResponse = await request(app.getHttpServer())
+      .post(`/time-off-requests/${createResponse.body.id}/approve`)
+      .expect(200);
+
+    expect(retryResponse.body).toEqual({
+      ...createResponse.body,
+      status: "APPROVED",
+      updatedAt: expect.any(String),
+      approvedAt: expect.any(String),
+      rejectedAt: null,
+    });
+    expect(
+      mockHcmService.getBalance({
+        employeeId: "emp_123",
+        locationId: "loc_001",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        availableDays: 8,
+      }),
+    );
   });
 
   it("rejects a pending request without deducting from HCM", async () => {
@@ -511,6 +646,12 @@ describe("TimeOffRequests (e2e)", () => {
           code: "INVALID_REQUEST_STATE",
           message:
             "Time off request is not in a valid state for this operation.",
+          details: {
+            requestId: createResponse.body.id,
+            operation: "APPROVE_TIME_OFF",
+            currentStatus: "REJECTED",
+            expectedStatus: "PENDING",
+          },
         },
       });
   });
@@ -547,6 +688,12 @@ describe("TimeOffRequests (e2e)", () => {
           code: "INVALID_REQUEST_STATE",
           message:
             "Time off request is not in a valid state for this operation.",
+          details: {
+            requestId: createResponse.body.id,
+            operation: "REJECT_TIME_OFF",
+            currentStatus: "APPROVED",
+            expectedStatus: "PENDING",
+          },
         },
       });
   });

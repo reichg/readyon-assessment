@@ -1,22 +1,12 @@
-import {
-  Controller,
-  Get,
-  HttpCode,
-  Inject,
-  Param,
-  Post,
-  UseFilters,
-} from "@nestjs/common";
+import { Controller, Get, HttpCode, Inject, Param, Post } from "@nestjs/common";
 import { BalanceService } from "./balance.service";
 import { BalanceParamsDto } from "./dto/balance-params.dto";
 import type { BalanceResponse } from "./shapes/balance-response";
-import { TimeOffExceptionFilter } from "./time-off.exception-filter";
 
 const balanceControllerRuntimeDependencies = [BalanceParamsDto];
 
 void balanceControllerRuntimeDependencies;
 
-@UseFilters(TimeOffExceptionFilter)
 @Controller("balances")
 export class BalancesController {
   constructor(

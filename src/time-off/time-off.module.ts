@@ -6,6 +6,7 @@ import { PersistenceModule } from "../persistence/persistence.module";
 import { TimeOffRequestLifecycleRepository } from "../persistence/time-off-request-lifecycle.repository";
 import { TimeOffRequestRepository } from "../persistence/time-off-request.repository";
 import { TelemetryModule } from "../telemetry/telemetry.module";
+import { ApprovalConcurrencyGate } from "./approval-concurrency-gate";
 import { BalanceService } from "./balance.service";
 import { BalancesController } from "./balances.controller";
 import { TimeOffRequestService } from "./time-off-request.service";
@@ -18,6 +19,7 @@ import { TimeOffRequestsController } from "./time-off-requests.controller";
     TimeOffRequestRepository,
     TimeOffRequestLifecycleRepository,
     HcmTransactionAuditRepository,
+    ApprovalConcurrencyGate,
     BalanceService,
     TimeOffRequestService,
   ],

@@ -34,6 +34,8 @@ The service must therefore provide a usable local experience without ever treati
 - Wants to see an accurate balance quickly.
 - Wants immediate feedback when submitting a time-off request.
 - Expects duplicate clicks or retried submissions not to create duplicate requests.
+- Can trust `GET /balances` as the latest known local projection and use `lastSyncedAt` as the freshness signal.
+- Can trigger `POST /balances/:employeeId/:locationId/refresh` for an HCM-backed refresh before making a decision, while approval still re-confirms with HCM.
 
 ### Manager
 
@@ -72,8 +74,8 @@ The service must therefore provide a usable local experience without ever treati
 3. Database bootstrap, migrations, and Prisma lifecycle remain infrastructure-owned and are not exposed globally across feature modules.
 4. Prisma-backed SQLite transactions remain short and deterministic.
 5. No raw database, Prisma, or HCM errors leak to clients or normal telemetry.
-6. Boundary telemetry remains low-cardinality, sanitized, and focused on HTTP, infrastructure, repository mutation, and HCM integration edges.
-7. The test suite covers concurrency, retries, stale data, batch correction, and safe telemetry behavior.
+6. Boundary telemetry remains low-cardinality and is produced from allow-listed call sites, with the current implementation focused on HTTP, database bootstrap, and repository mutation edges rather than centralized payload redaction across every boundary.
+7. The test suite covers concurrency, retries, stale data, batch correction, safe error behavior, and telemetry behavior for the currently instrumented boundaries.
 
 ## 6. Assumptions and Constraints
 
@@ -84,7 +86,7 @@ The service must therefore provide a usable local experience without ever treati
 5. HCM provides `effectiveAt` and `sourceVersion` on batch data.
 6. The initial implementation is single-instance and correctness-focused.
 7. Authentication is out of scope; manager actions are modeled as API commands only.
-8. The repository includes an in-repository mock HCM that becomes the upstream dependency in tests.
+8. The repository includes an in-repo mock-backed HCM adapter used by the app in this take-home, with a separate `MockHcmHttpModule` mounted only in tests for upstream contract coverage.
 9. Prisma manages the SQLite schema and connection lifecycle, while repositories remain the application persistence boundary.
 
 ## 7. System Architecture
@@ -93,20 +95,26 @@ The service must therefore provide a usable local experience without ever treati
 
 1. API layer
    - `BalancesController`
-   - `TimeOffRequestsController`
-   - `ReconciliationController` or an HCM-ingest controller under the reconciliation ownership boundary
 
-2. Domain layer
-   - `BalanceRefreshService`
-   - `TimeOffRequestService`
-   - `ApprovalService`
-   - `ReconciliationService`
+- `TimeOffRequestsController`
+- `ReconciliationController`
+- `HealthController`
+
+2. Application services layer
+
+- `BalanceService`
+- `TimeOffRequestService`
+- `ReconciliationService`
+- `ApprovalConcurrencyGate`
 
 3. Persistence layer
    - `BalanceRepository`
    - `TimeOffRequestRepository`
-   - `HcmTransactionAuditRepository`
-   - `ReconciliationRunRepository`
+
+- `TimeOffRequestLifecycleRepository`
+- `HcmTransactionAuditRepository`
+- `ReconciliationRunRepository`
+- `ReconciliationLifecycleRepository`
 
 4. Infrastructure layer
 
@@ -116,8 +124,9 @@ The service must therefore provide a usable local experience without ever treati
 - `HttpTelemetryInterceptor`
 
 5. Integration layer
-   - `HcmClient`
 
+- `HcmBalanceClient`
+- `HcmTimeOffClient`
 - `MockHcmService`
 - `MockHcmHttpModule`
 
@@ -126,15 +135,18 @@ The service must therefore provide a usable local experience without ever treati
    - Error mapping and exception filters
    - Consistent API error envelope
 
+The implementation keeps controllers thin and business rules out of controllers, but it does not introduce a separate domain-port layer for every dependency. Services depend on concrete repositories and HCM adapters to keep the take-home small and reviewable.
+
 ### Dependency direction
 
 - Controllers depend on DTOs and services.
 - Root-owned app wiring owns global validation and request telemetry.
-- Services depend on repositories and the HCM client.
+- Services depend on concrete repositories and HCM adapters.
+- Feature modules wire the repositories they use directly; persistence infrastructure is shared, but repository ownership stays feature-local rather than funneled through a single central registry.
 - Repositories depend on Prisma-backed SQLite infrastructure and repository-local contracts.
 - Only infrastructure concerns such as health checks or bootstrap lifecycle use the raw database service directly.
 - Database and telemetry infrastructure are imported explicitly by the modules that need them rather than being exposed as global shortcuts.
-- The mock HCM is isolated from the public ReadyOn domain logic and is mounted through a dedicated test-only HTTP module rather than the public `AppModule`.
+- The mock HCM HTTP surface is mounted only through a dedicated test-only module rather than the public `AppModule`, but the take-home app still uses mock-backed HCM client implementations for deterministic runtime behavior.
 
 ### Persistence implementation notes
 
@@ -193,7 +205,7 @@ Statuses:
 - `PENDING`
 - `APPROVED`
 - `REJECTED`
-- `FAILED`
+- `FAILED` reserved for future request-level terminal failure handling; not emitted by the current request lifecycle
 - `CANCELLED` reserved for future work only; not used in the first implementation
 
 Status semantics:
@@ -201,7 +213,7 @@ Status semantics:
 - `PENDING`: request created, not yet finally resolved
 - `APPROVED`: HCM accepted the deduction and local projection was updated
 - `REJECTED`: final business denial, such as manager rejection, invalid dimensions, or insufficient balance
-- `FAILED`: non-business terminal failure requiring manual inspection or recovery; expected to be rare in the first implementation
+- `FAILED`: reserved; the current implementation records non-business terminal failure detail on the HCM audit row and keeps the request retry-safe `PENDING` until it reaches `APPROVED` or `REJECTED`
 
 ### HcmTransactionAudit
 
@@ -325,20 +337,21 @@ Status codes:
 Semantics:
 
 1. Load the request.
-2. Ensure the request is `PENDING`.
-3. Acquire per-employee/location approval serialization.
-4. Re-check the request state inside the serialized section.
-5. Fetch or verify authoritative balance with HCM.
-6. Submit deduction to HCM using a stable `externalRequestId` derived from the ReadyOn request id.
-7. If HCM accepts, persist `APPROVED`, store the HCM transaction id, and update the local projection in one short local transaction.
-8. If HCM rejects for business reasons, persist `REJECTED` and refresh or correct the local projection.
-9. If HCM is unavailable or the outcome is unknown, keep the request non-approved and allow retry-safe recovery.
+2. If the request is already `APPROVED`, return the approved resource idempotently.
+3. Otherwise ensure the request is `PENDING`.
+4. Acquire per-employee/location approval serialization.
+5. Re-check the request state inside the serialized section.
+6. Fetch or verify authoritative balance with HCM.
+7. Submit deduction to HCM using a stable `externalRequestId` derived from the ReadyOn request id.
+8. If HCM accepts, persist `APPROVED`, store the HCM transaction id, and update the local projection in one short local transaction.
+9. If HCM rejects for business reasons, persist `REJECTED` and refresh or correct the local projection from authoritative HCM data when available.
+10. If HCM is unavailable or the outcome is unknown, keep the request non-approved and allow retry-safe recovery.
 
 Status codes:
 
-- `200` on successful approval
+- `200` on successful approval or replay of a previously approved request
 - `404` with `TIME_OFF_REQUEST_NOT_FOUND`
-- `409` with `INVALID_REQUEST_STATE`
+- `409` with `INVALID_REQUEST_STATE` for non-pending states other than a prior successful approval replay
 - `409` with `INSUFFICIENT_BALANCE`
 - `409` with `INVALID_EMPLOYEE_LOCATION`
 - `503` with `HCM_UNAVAILABLE` if the outcome cannot be confirmed safely
@@ -389,8 +402,7 @@ Response body:
   "inserted": 0,
   "updated": 1,
   "ignored": 0,
-  "rejected": 0,
-  "errors": []
+  "rejected": 0
 }
 ```
 
@@ -402,8 +414,9 @@ Status codes:
 
 ### Mock HCM API
 
-The mock HCM is test-only and is not part of the public ReadyOn API contract.
+The mock HCM HTTP surface is test-only and is not part of the public ReadyOn API contract.
 It is mounted through a dedicated `MockHcmHttpModule` for focused contract tests rather than the public `AppModule`.
+The take-home app still uses mock-backed HCM client implementations internally, so reviewers should treat `/mock-hcm/*` as upstream contract-test routes rather than a second public API.
 
 ## 10. HCM Integration Design
 
@@ -420,6 +433,8 @@ ReadyOn uses HCM for:
 1. real-time balance refresh;
 2. approval-time deduction submission; and
 3. batch snapshot ingestion.
+
+In this take-home, both runtime HCM clients are backed by the in-repo mock service for deterministic behavior. The separate mock HCM HTTP routes exist only for contract testing of upstream semantics.
 
 ### Outbound approval contract
 
@@ -459,13 +474,14 @@ The Phase 5 mock HCM must simulate:
 ### Approve
 
 1. Acquire serialization for `employeeId + locationId`.
-2. Verify request is still `PENDING`.
-3. Query HCM for latest balance or use a safe verification call.
-4. If balance is insufficient, persist `REJECTED`.
-5. Submit deduction to HCM using the stable external request id.
-6. On HCM success, persist `APPROVED` and the updated local projection atomically.
-7. On business rejection, persist `REJECTED` with a stable failure code.
-8. On transient or ambiguous upstream failure, do not approve locally; return a retry-safe error and preserve enough audit state for convergence.
+2. Return the existing resource immediately if it was already approved.
+3. Otherwise verify the request is still `PENDING`.
+4. Query HCM for latest balance or use a safe verification call.
+5. If balance is insufficient, persist `REJECTED` and correct the local projection from authoritative data.
+6. Submit deduction to HCM using the stable external request id.
+7. On HCM success, persist `APPROVED` and the updated local projection atomically.
+8. On business rejection, persist `REJECTED` with a stable failure code and authoritative balance data when available.
+9. On transient or ambiguous upstream failure, do not approve locally; return a retry-safe error and preserve enough audit state for convergence.
 
 ### Reject
 
@@ -479,8 +495,16 @@ The Phase 5 mock HCM must simulate:
 2. ReadyOn keeps a local projection strictly for reads, UX, and resilience.
 3. Local projections may block obviously impossible creates but cannot authorize final approval.
 4. Approval requires authoritative HCM confirmation before local commit.
-5. Projection updates happen only after HCM success or reconciliation.
+5. Projection updates happen only after authoritative HCM confirmation, including business-denial correction paths, or reconciliation.
 6. Failed or rejected requests must never silently decrement local balance.
+
+### Employee trust model
+
+- `GET /balances/:employeeId/:locationId` returns ReadyOn's latest known local projection, not a guarantee that no HCM-side change has happened since the last sync.
+- `lastSyncedAt` is the freshness signal that tells the employee when that projection was last synchronized.
+- `POST /balances/:employeeId/:locationId/refresh` fetches the current authoritative HCM balance and overwrites stale local data.
+- Approval never trusts the cached balance alone; ReadyOn re-checks HCM before approving and corrects the local projection if HCM rejects for insufficient balance or invalid dimensions.
+- Batch reconciliation repairs any remaining drift caused by independent HCM changes or partial failures.
 
 ## 13. Batch Reconciliation Strategy
 
@@ -525,12 +549,13 @@ It provides deterministic stale-batch behavior without relying on lexical sortin
 {
   "error": {
     "code": "INSUFFICIENT_BALANCE",
-    "message": "Requested days exceed available balance.",
+    "message": "Available balance is insufficient for the requested time off.",
     "details": {
       "employeeId": "emp_123",
       "locationId": "loc_001",
       "requestedDays": 5,
-      "availableDays": 3
+      "availableDays": 3,
+      "source": "HCM"
     }
   }
 }
@@ -557,7 +582,7 @@ It provides deterministic stale-batch behavior without relying on lexical sortin
 4. Map HCM invalid dimension responses to `INVALID_EMPLOYEE_LOCATION`.
 5. Map HCM insufficient balance to `INSUFFICIENT_BALANCE`.
 6. Map transient or unknown upstream failures to `HCM_UNAVAILABLE`.
-7. Use `INVALID_REQUEST_STATE` for non-pending approval or rejection attempts.
+7. Use `INVALID_REQUEST_STATE` for non-pending approval or rejection attempts, except for approval replay after prior success, which returns `200` with the existing approved resource.
 
 ## 16. Race Condition Strategy
 
@@ -578,22 +603,24 @@ This strategy is safe for a single service instance. A multi-instance deployment
 
 ## 17. Observability and Logging Strategy
 
-1. Use structured logs with request correlation ids for each incoming request and for important downstream infrastructure boundaries.
-2. Log HTTP request completion, database bootstrap and ping outcomes, repository mutation outcomes, downstream HCM submission outcomes, and reconciliation summaries.
-3. Exclude raw HCM bodies, raw SQL, secrets, stack traces, employee identifiers, location identifiers, request payloads, idempotency keys, external request identifiers, HCM transaction identifiers, filesystem paths, and raw driver errors from normal logs and client-facing responses.
+1. Use structured logs with request correlation ids for each incoming HTTP request and selected downstream infrastructure boundaries.
+2. The current implementation emits telemetry for HTTP request completion, database bootstrap and ping outcomes, repository mutation outcomes, and reconciliation summaries. Dedicated HCM-client-edge telemetry is future work.
+3. Exclude raw HCM bodies, raw SQL, secrets, stack traces, request payloads, idempotency keys, external request identifiers, HCM transaction identifiers, filesystem paths, and raw driver errors from normal logs and client-facing responses.
 4. Emit low-cardinality metadata only:
 
 - request id
 - component
 - operation
+- route label when relevant
 - outcome category
 - duration
 - status code or transition kind
 - count summaries for reconciliation or batch processing
 - idempotency-key presence only when operationally useful
 
-5. Persistence and HCM failures must be logged only after they have been mapped into stable product-level categories such as conflict, constraint, unavailable, or unexpected.
-6. Keep observability minimal but sufficient for reviewer confidence.
+5. Telemetry safety currently relies on allow-listed event payloads and focused tests rather than a centralized redaction layer.
+6. Persistence failures must be logged only after they have been mapped into stable product-level categories such as conflict, constraint, unavailable, or unexpected.
+7. Keep observability minimal but sufficient for reviewer confidence.
 
 ## 18. Alternatives Considered
 
@@ -653,7 +680,7 @@ The prompt explicitly allows REST and the required operations map naturally to c
 
 ## 19. Testing Strategy
 
-The final implementation will use:
+The implemented test suite uses:
 
 1. unit tests for validation, state transitions, stale-batch policies, and idempotency rules;
 2. integration tests for services, repositories, and SQLite-backed invariants;
@@ -673,6 +700,7 @@ The companion `TEST_PLAN.md` is the authoritative scenario matrix.
 4. The mock HCM is not a substitute for a real vendor contract test suite.
 5. Recovery from a confirmed HCM success plus local persistence crash relies on retry convergence and reconciliation, not a distributed transaction.
 6. SQLite is sufficient for the take-home but not the intended long-term scale choice.
+7. Telemetry safety relies on allow-listed event payloads and focused tests; dedicated HCM-client-edge telemetry is not implemented separately.
 
 Future work:
 

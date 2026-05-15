@@ -2,6 +2,7 @@ import type { INestApplication } from "@nestjs/common";
 import request from "supertest";
 import { MockHcmService } from "../../src/hcm/mock-hcm.service";
 import { BalanceRepository } from "../../src/persistence/balance.repository";
+import { BalanceService } from "../../src/time-off/balance.service";
 import {
   createMockHcmBalance,
   createMockHcmSeedState,
@@ -52,6 +53,69 @@ describe("Balances (e2e)", () => {
       });
   });
 
+  it("shows a stale balance until refresh pulls the latest authoritative HCM value", async () => {
+    if (!app) {
+      throw new Error("Test application did not initialize.");
+    }
+
+    const balanceRepository = app.get(BalanceRepository);
+
+    mockHcmService.reset(
+      createMockHcmSeedState({
+        balances: [createMockHcmBalance({ availableDays: 4 })],
+      }),
+    );
+
+    await balanceRepository.upsertProjection({
+      employeeId: "emp_123",
+      locationId: "loc_001",
+      availableDays: 4,
+      sourceVersion: "batch_2026_010",
+      lastSyncedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    mockHcmService.adjustBalance({
+      employeeId: "emp_123",
+      locationId: "loc_001",
+      deltaDays: 3,
+    });
+
+    await request(app.getHttpServer())
+      .get("/balances/emp_123/loc_001")
+      .expect(200)
+      .expect({
+        employeeId: "emp_123",
+        locationId: "loc_001",
+        availableDays: 4,
+        lastSyncedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+    await request(app.getHttpServer())
+      .post("/balances/emp_123/loc_001/refresh")
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toEqual({
+          employeeId: "emp_123",
+          locationId: "loc_001",
+          availableDays: 7,
+          lastSyncedAt: expect.any(String),
+        });
+        expect(body.lastSyncedAt).not.toBe("2026-01-01T00:00:00.000Z");
+      });
+
+    await request(app.getHttpServer())
+      .get("/balances/emp_123/loc_001")
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toEqual({
+          employeeId: "emp_123",
+          locationId: "loc_001",
+          availableDays: 7,
+          lastSyncedAt: expect.any(String),
+        });
+      });
+  });
+
   it("returns a stable not-found error when no local projection exists", async () => {
     if (!app) {
       throw new Error("Test application did not initialize.");
@@ -64,6 +128,10 @@ describe("Balances (e2e)", () => {
         error: {
           code: "BALANCE_NOT_FOUND",
           message: "Balance projection was not found.",
+          details: {
+            employeeId: "missing-employee",
+            locationId: "missing-location",
+          },
         },
       });
   });
@@ -85,11 +153,11 @@ describe("Balances (e2e)", () => {
             }),
           }),
         );
-        expect(body.error.details).toEqual(
-          expect.arrayContaining([
+        expect(body.error.details).toEqual({
+          violations: expect.arrayContaining([
             "employeeId must be shorter than or equal to 64 characters",
           ]),
-        );
+        });
       });
   });
 
@@ -143,6 +211,11 @@ describe("Balances (e2e)", () => {
         error: {
           code: "INVALID_EMPLOYEE_LOCATION",
           message: "Employee and location were not found in HCM.",
+          details: {
+            employeeId: "missing-employee",
+            locationId: "missing-location",
+            operation: "REFRESH_BALANCE",
+          },
         },
       });
 
@@ -181,6 +254,11 @@ describe("Balances (e2e)", () => {
         error: {
           code: "HCM_UNAVAILABLE",
           message: "HCM is temporarily unavailable.",
+          details: {
+            employeeId: "emp_123",
+            locationId: "loc_001",
+            operation: "REFRESH_BALANCE",
+          },
         },
       });
 
@@ -195,5 +273,46 @@ describe("Balances (e2e)", () => {
         lastSyncedAt: "2026-01-02T00:00:00.000Z",
       }),
     );
+  });
+
+  it("returns a safe generic error without leaking internal details", async () => {
+    if (!app) {
+      throw new Error("Test application did not initialize.");
+    }
+
+    const balanceService = app.get(BalanceService);
+
+    jest
+      .spyOn(balanceService, "getBalance")
+      .mockRejectedValueOnce(new Error("SQLITE_CONSTRAINT: internal details"));
+
+    await request(app.getHttpServer())
+      .get("/balances/emp_123/loc_001")
+      .expect(500)
+      .expect(({ body }) => {
+        expect(body).toEqual({
+          error: {
+            code: "INTERNAL_SERVER_ERROR",
+            message: "An unexpected error occurred.",
+          },
+        });
+        expect(JSON.stringify(body)).not.toContain("SQLITE_CONSTRAINT");
+      });
+  });
+
+  it("maps unknown routes to the shared safe HttpException contract", async () => {
+    if (!app) {
+      throw new Error("Test application did not initialize.");
+    }
+
+    await request(app.getHttpServer())
+      .get("/unknown-route")
+      .expect(404)
+      .expect({
+        error: {
+          code: "NOT_FOUND",
+          message: "Resource was not found.",
+        },
+      });
   });
 });

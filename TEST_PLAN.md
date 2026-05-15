@@ -93,9 +93,11 @@ These tests prove the Phase 5 mock HCM itself is trustworthy as a regression dep
 - transient failures; and
 - duplicate external request id idempotency.
 
+These tests intentionally validate a separate upstream-style contract from the public ReadyOn API error envelope.
+
 ## 5. Environment and Tooling Plan
 
-Target tooling after scaffolding:
+Repository tooling:
 
 - TypeScript
 - NestJS test utilities
@@ -105,7 +107,7 @@ Target tooling after scaffolding:
 - Prisma migrations and generated client
 - SQLite with isolated test databases
 
-Target validation commands after scaffolding:
+Primary validation commands:
 
 ```bash
 pnpm build
@@ -115,15 +117,13 @@ pnpm test:e2e
 pnpm test:cov
 ```
 
-Current status:
+Current implemented proof:
 
-- The Phase 3 scaffold now supports executable build, lint, unit, e2e, and coverage runs.
-- The Phase 4 persistence slice now uses Prisma-backed repository-contract parity over isolated SQLite files.
-- The Phase 5 mock HCM now runs through a resettable in-memory service plus a dedicated test-only HTTP module for focused contract coverage.
-- The Phase 6 balance API now supports local balance reads and HCM-backed refresh with focused integration and e2e coverage.
-- The Phase 7 request lifecycle now supports create, get, approve, and reject behavior with focused service, controller, and e2e coverage for success, rejection, and transient failure paths.
-- Reconciliation and race-condition scenarios remain later-phase work.
-- The scenario matrix below remains the target-state behavior plan, now mixing implemented phase 7 lifecycle coverage with still-planned later-phase scenarios.
+- The repository has executable build, lint, unit, e2e, and coverage validation commands.
+- Persistence, mock HCM behavior, balance refresh, request lifecycle, reconciliation, concurrency hardening, and the public error contract are implemented and covered.
+- Public ReadyOn routes and mock HCM routes are validated separately: ReadyOn uses the public error envelope, while mock HCM tests assert the upstream-style mock contract directly.
+- The latest coverage artifact reports 93.70% statements, 81.57% branches, 91.13% functions, and 93.37% lines, exceeding the plan thresholds.
+- The scenario matrix below is the primary reviewer-facing proof map.
 
 ## 6. Test Data and Fixture Strategy
 
@@ -145,61 +145,62 @@ Columns:
 - `Level`: unit, integration, e2e, or mock-hcm
 - `Expected assertion`: the core proof point
 
-| ID   | Capability           | Risk | Scenario                                                                  | Level       | Expected assertion                                                                         |
-| ---- | -------------------- | ---- | ------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------ |
-| B01  | Balance read         | R7   | Get existing balance                                                      | e2e         | Returns 200 and the local projection                                                       |
-| B02  | Balance read         | R7   | Get missing balance                                                       | e2e         | Returns 404 with `BALANCE_NOT_FOUND`                                                       |
-| B03  | Balance refresh      | R7   | Refresh balance from HCM success                                          | integration | Upserts local projection from HCM                                                          |
-| B04  | Balance refresh      | R2   | Refresh invalid employee/location                                         | e2e         | Returns 404 with `INVALID_EMPLOYEE_LOCATION` and no invalid projection write               |
-| B05  | Balance refresh      | R6   | Refresh when HCM is unavailable                                           | integration | Returns upstream-unavailable error without corrupting projection                           |
-| C01  | Create request       | R9   | Create valid request                                                      | e2e         | Persists `PENDING` request and returns 201                                                 |
-| C02  | Create request       | R8   | Reject zero requestedDays                                                 | unit        | Validation fails before persistence                                                        |
-| C03  | Create request       | R8   | Reject negative requestedDays                                             | unit        | Validation fails before persistence                                                        |
-| C04  | Create request       | R8   | Reject missing employeeId                                                 | unit        | Validation fails before persistence                                                        |
-| C05  | Create request       | R8   | Reject missing locationId                                                 | unit        | Validation fails before persistence                                                        |
-| C06  | Create request       | R1   | Reject request when known local balance is insufficient                   | integration | Returns `INSUFFICIENT_BALANCE` without creating a request                                  |
-| C07  | Create request       | R1   | Allow request creation when no local balance projection exists            | integration | Request is still created as `PENDING`                                                      |
-| C08  | Create request       | R3   | Duplicate create with same idempotency key and same payload               | integration | Returns the original request, no duplicate row                                             |
-| C09  | Create request       | R3   | Duplicate create with same idempotency key and different payload          | integration | Returns `IDEMPOTENCY_KEY_CONFLICT`                                                         |
-| A01  | Approval             | R1   | Approve valid pending request                                             | e2e         | HCM is called, request becomes `APPROVED`, local projection updates                        |
-| A02  | Approval             | R9   | Reject approval when request is not pending                               | e2e         | Returns `INVALID_REQUEST_STATE`                                                            |
-| A03  | Approval             | R2   | Reject approval when HCM says invalid employee/location                   | integration | Request becomes `REJECTED`, no local deduction                                             |
-| A04  | Approval             | R1   | Reject approval when HCM says insufficient balance                        | integration | Request becomes `REJECTED`, local projection is refreshed or corrected                     |
-| A05  | Approval             | R6   | HCM unavailable before confirmed outcome                                  | integration | Request stays non-approved and retry-safe                                                  |
-| A06  | Approval             | R3   | Retry approval after transient HCM failure                                | integration | No double deduction; request converges safely                                              |
-| A07  | Approval             | R3   | Retry approval after prior HCM success                                    | integration | Returns approved result without second deduction                                           |
-| A08  | Approval             | R6   | Crash or persistence failure after HCM success                            | integration | Retry converges via same external request id without double deduction                      |
-| A09  | Approval             | R3   | Concurrent approval of the same request                                   | integration | Only one effective approval is applied                                                     |
-| RJ01 | Manager rejection    | R9   | Reject pending request                                                    | e2e         | Request becomes `REJECTED`                                                                 |
-| RJ02 | Manager rejection    | R9   | Reject already approved request                                           | e2e         | Returns `INVALID_REQUEST_STATE`                                                            |
-| RJ03 | Manager rejection    | R3   | Reject pending request does not call HCM                                  | integration | No HCM deduction side effect occurs                                                        |
-| H01  | HCM external changes | R7   | Simulate work anniversary bonus in HCM                                    | mock-hcm    | HCM state increases independently                                                          |
-| H02  | HCM external changes | R7   | Local projection is stale before refresh                                  | integration | Local read differs from HCM until refresh                                                  |
-| H03  | HCM external changes | R7   | Refresh corrects stale local projection                                   | integration | Local projection matches HCM after refresh                                                 |
-| H04  | HCM external changes | R7   | Batch reconciliation corrects stale local projection                      | integration | Local projection is healed from batch snapshot                                             |
-| Q01  | Reconciliation       | R5   | Insert new balance from batch                                             | integration | New local balance row is created                                                           |
-| Q02  | Reconciliation       | R5   | Update existing balance from batch                                        | integration | Existing projection updates to authoritative values                                        |
-| Q03  | Reconciliation       | R5   | Exact replay of same sourceVersion                                        | integration | Operation is idempotent no-op                                                              |
-| Q04  | Reconciliation       | R5   | Stale sourceVersion or older effectiveAt                                  | integration | Returns `STALE_SOURCE_VERSION` and performs no writes                                      |
-| Q05  | Reconciliation       | R5   | Duplicate employee/location rows in one batch                             | integration | Returns `DUPLICATE_RECONCILIATION_ROW`                                                     |
-| Q06  | Reconciliation       | R8   | Invalid batch payload                                                     | e2e         | Returns `VALIDATION_ERROR`                                                                 |
-| RC01 | Race conditions      | R4   | Two approvals within total balance both succeed                           | integration | Both approvals succeed when HCM balance allows it                                          |
-| RC02 | Race conditions      | R4   | Two approvals exceeding total balance do not both succeed                 | integration | At most one approval succeeds when total days exceed balance                               |
-| RC03 | Race conditions      | R4   | Same-request concurrent approval only succeeds once                       | integration | One logical approval and one HCM deduction                                                 |
-| T01  | Telemetry            | R11  | Database bootstrap emits a structured success event                       | integration | Event includes component, operation, outcome, and duration without path or URL leakage     |
-| T02  | Telemetry            | R11  | Translated persistence conflicts and constraints emit sanitized telemetry | integration | Event category is stable and excludes raw Prisma or SQLite details                         |
-| T03  | Telemetry            | R11  | HTTP request lifecycle telemetry stays sanitized                          | e2e         | Event includes request id, method, route, status, and duration without body or identifiers |
-| MH01 | Mock HCM             | R2   | Realtime balance lookup valid dimensions                                  | mock-hcm    | Returns current HCM balance                                                                |
-| MH02 | Mock HCM             | R2   | Realtime balance lookup invalid dimensions                                | mock-hcm    | Returns clean invalid-dimension error                                                      |
-| MH03 | Mock HCM             | R1   | Deduct time off with sufficient balance                                   | mock-hcm    | Deduction is atomic and returns transaction id                                             |
-| MH04 | Mock HCM             | R1   | Deduct time off with insufficient balance                                 | mock-hcm    | Rejects cleanly without partial mutation                                                   |
-| MH05 | Mock HCM             | R3   | Duplicate externalRequestId submission                                    | mock-hcm    | Returns idempotent result without double deduction                                         |
-| MH06 | Mock HCM             | R6   | Transient HCM error simulation                                            | mock-hcm    | Controlled failure path is available for retry tests                                       |
-| E01  | Error handling       | R8   | Validation error envelope shape                                           | e2e         | Error response contains stable code/message/details shape                                  |
-| E02  | Error handling       | R8   | Missing resource error envelope                                           | e2e         | Uses stable not-found code without raw internals                                           |
-| E03  | Error handling       | R8   | Invalid state transition error                                            | e2e         | Returns `INVALID_REQUEST_STATE`                                                            |
-| E04  | Error handling       | R8   | Upstream failure error                                                    | e2e         | Returns `HCM_UNAVAILABLE` without raw upstream body                                        |
-| E05  | Error handling       | R8   | No raw SQLite or stack trace leakage                                      | e2e         | Response body excludes internal exception details                                          |
+| ID   | Capability           | Risk | Scenario                                                                            | Level       | Expected assertion                                                                                                                               |
+| ---- | -------------------- | ---- | ----------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| B01  | Balance read         | R7   | Get existing balance                                                                | e2e         | Returns 200 and the local projection                                                                                                             |
+| B02  | Balance read         | R7   | Get missing balance                                                                 | e2e         | Returns 404 with `BALANCE_NOT_FOUND`                                                                                                             |
+| B03  | Balance refresh      | R7   | Refresh balance from HCM success                                                    | integration | Upserts local projection from HCM                                                                                                                |
+| B04  | Balance refresh      | R2   | Refresh invalid employee/location                                                   | e2e         | Returns 404 with `INVALID_EMPLOYEE_LOCATION` and no invalid projection write                                                                     |
+| B05  | Balance refresh      | R6   | Refresh when HCM is unavailable                                                     | integration | Returns upstream-unavailable error without corrupting projection                                                                                 |
+| B06  | Balance freshness    | R7   | Employee sees a stale local balance, refreshes, and then sees the corrected balance | e2e         | Initial read returns the latest-known projection, refresh returns the HCM-backed value, and the follow-up read reflects the corrected projection |
+| C01  | Create request       | R9   | Create valid request                                                                | e2e         | Persists `PENDING` request and returns 201                                                                                                       |
+| C02  | Create request       | R8   | Reject zero requestedDays                                                           | unit        | Validation fails before persistence                                                                                                              |
+| C03  | Create request       | R8   | Reject negative requestedDays                                                       | unit        | Validation fails before persistence                                                                                                              |
+| C04  | Create request       | R8   | Reject missing employeeId                                                           | unit        | Validation fails before persistence                                                                                                              |
+| C05  | Create request       | R8   | Reject missing locationId                                                           | unit        | Validation fails before persistence                                                                                                              |
+| C06  | Create request       | R1   | Reject request when known local balance is insufficient                             | integration | Returns `INSUFFICIENT_BALANCE` without creating a request                                                                                        |
+| C07  | Create request       | R1   | Allow request creation when no local balance projection exists                      | integration | Request is still created as `PENDING`                                                                                                            |
+| C08  | Create request       | R3   | Duplicate create with same idempotency key and same payload                         | integration | Returns the original request, no duplicate row                                                                                                   |
+| C09  | Create request       | R3   | Duplicate create with same idempotency key and different payload                    | integration | Returns `IDEMPOTENCY_KEY_CONFLICT`                                                                                                               |
+| A01  | Approval             | R1   | Approve valid pending request                                                       | e2e         | HCM is called, request becomes `APPROVED`, local projection updates                                                                              |
+| A02  | Approval             | R9   | Reject approval when request is non-pending and not already approved                | e2e         | Returns `INVALID_REQUEST_STATE` for rejected or otherwise non-replayable states                                                                  |
+| A03  | Approval             | R2   | Reject approval when HCM says invalid employee/location                             | integration | Request becomes `REJECTED`, no local deduction                                                                                                   |
+| A04  | Approval             | R1   | Reject approval when HCM says insufficient balance                                  | integration | Request becomes `REJECTED`, local projection is refreshed or corrected                                                                           |
+| A05  | Approval             | R6   | HCM unavailable before confirmed outcome                                            | integration | Request stays non-approved and retry-safe                                                                                                        |
+| A06  | Approval             | R3   | Retry approval after transient HCM failure                                          | integration | No double deduction; request converges safely                                                                                                    |
+| A07  | Approval             | R3   | Retry approval after prior HCM success                                              | integration | Returns approved result without second deduction                                                                                                 |
+| A08  | Approval             | R6   | Finalize-approval recovery after previously confirmed HCM success                   | integration | Recovery path returns the approved request without a second HCM deduction                                                                        |
+| A09  | Approval             | R3   | Concurrent approval of the same request                                             | integration | Only one effective approval is applied                                                                                                           |
+| RJ01 | Manager rejection    | R9   | Reject pending request                                                              | e2e         | Request becomes `REJECTED`                                                                                                                       |
+| RJ02 | Manager rejection    | R9   | Reject already approved request                                                     | e2e         | Returns `INVALID_REQUEST_STATE`                                                                                                                  |
+| RJ03 | Manager rejection    | R3   | Reject pending request does not call HCM                                            | integration | No HCM deduction side effect occurs                                                                                                              |
+| H01  | HCM external changes | R7   | Simulate work anniversary bonus in HCM                                              | mock-hcm    | HCM state increases independently                                                                                                                |
+| H02  | HCM external changes | R7   | Local projection is stale before refresh                                            | integration | Local read differs from HCM until refresh                                                                                                        |
+| H03  | HCM external changes | R7   | Refresh corrects stale local projection                                             | integration | Local projection matches HCM after refresh                                                                                                       |
+| H04  | HCM external changes | R7   | Batch reconciliation corrects stale local projection                                | integration | Local projection is healed from batch snapshot                                                                                                   |
+| Q01  | Reconciliation       | R5   | Insert new balance from batch                                                       | integration | New local balance row is created                                                                                                                 |
+| Q02  | Reconciliation       | R5   | Update existing balance from batch                                                  | integration | Existing projection updates to authoritative values                                                                                              |
+| Q03  | Reconciliation       | R5   | Exact replay of same sourceVersion                                                  | integration | Operation is idempotent no-op                                                                                                                    |
+| Q04  | Reconciliation       | R5   | Stale sourceVersion or older effectiveAt                                            | integration | Returns `STALE_SOURCE_VERSION` and performs no writes                                                                                            |
+| Q05  | Reconciliation       | R5   | Duplicate employee/location rows in one batch                                       | integration | Returns `DUPLICATE_RECONCILIATION_ROW`                                                                                                           |
+| Q06  | Reconciliation       | R8   | Invalid batch payload                                                               | e2e         | Returns `VALIDATION_ERROR`                                                                                                                       |
+| RC01 | Race conditions      | R4   | Two approvals within total balance both succeed                                     | integration | Both approvals succeed when HCM balance allows it                                                                                                |
+| RC02 | Race conditions      | R4   | Two approvals exceeding total balance do not both succeed                           | integration | At most one approval succeeds when total days exceed balance                                                                                     |
+| RC03 | Race conditions      | R4   | Same-request concurrent approval only succeeds once                                 | integration | One logical approval and one HCM deduction                                                                                                       |
+| T01  | Telemetry            | R11  | Database bootstrap emits a structured success event                                 | integration | Event includes component, operation, outcome, and duration without path or URL leakage                                                           |
+| T02  | Telemetry            | R11  | Translated persistence conflicts and constraints emit sanitized telemetry           | integration | Event category is stable and excludes raw Prisma or SQLite details                                                                               |
+| T03  | Telemetry            | R11  | HTTP request lifecycle telemetry stays sanitized                                    | e2e         | Event includes request id, method, route, status, and duration without request bodies or business identifiers                                    |
+| MH01 | Mock HCM             | R2   | Realtime balance lookup valid dimensions                                            | mock-hcm    | Returns current HCM balance                                                                                                                      |
+| MH02 | Mock HCM             | R2   | Realtime balance lookup invalid dimensions                                          | mock-hcm    | Returns clean invalid-dimension error                                                                                                            |
+| MH03 | Mock HCM             | R1   | Deduct time off with sufficient balance                                             | mock-hcm    | Deduction is atomic and returns transaction id                                                                                                   |
+| MH04 | Mock HCM             | R1   | Deduct time off with insufficient balance                                           | mock-hcm    | Rejects cleanly without partial mutation                                                                                                         |
+| MH05 | Mock HCM             | R3   | Duplicate externalRequestId submission                                              | mock-hcm    | Returns idempotent result without double deduction                                                                                               |
+| MH06 | Mock HCM             | R6   | Transient HCM error simulation                                                      | mock-hcm    | Controlled failure path is available for retry tests                                                                                             |
+| E01  | Error handling       | R8   | Validation error envelope shape                                                     | e2e         | Error response contains stable code/message/details shape                                                                                        |
+| E02  | Error handling       | R8   | Missing resource error envelope                                                     | e2e         | Uses stable not-found code without raw internals                                                                                                 |
+| E03  | Error handling       | R8   | Invalid state transition error                                                      | e2e         | Returns `INVALID_REQUEST_STATE`                                                                                                                  |
+| E04  | Error handling       | R8   | Upstream failure error                                                              | e2e         | Returns `HCM_UNAVAILABLE` without raw upstream body                                                                                              |
+| E05  | Error handling       | R8   | No raw SQLite or stack trace leakage                                                | e2e         | Response body excludes internal exception details                                                                                                |
 
 ## 8. Coverage and Exit Criteria
 
@@ -233,6 +234,12 @@ Columns:
 5. README includes the final coverage summary.
 6. The implemented test suite covers all required risks in this plan.
 
+### Current phase 11 proof snapshot
+
+- The current coverage artifact under `coverage/` exceeds the threshold targets.
+- The current scenario matrix matches the implemented balance, request-lifecycle, reconciliation, idempotency, error-contract, and telemetry proof surface.
+- Final reviewer validation should rerun `pnpm build`, `pnpm lint`, `pnpm test`, `pnpm test:e2e`, and `pnpm test:cov`.
+
 ## 9. Traceability Back to Design
 
 - `TRD.md` owns the architecture, consistency model, and tradeoff decisions.
@@ -248,6 +255,10 @@ The final implementation is acceptable only if the tested behavior matches the T
 5. create and approval idempotency
 6. concurrency protection
 7. stable error contracts
+
+Employee balance accuracy is proven by the combined B01, B03, B06, A01, A04, and H04 scenarios: latest-known balance reads, explicit HCM refresh, approval-time HCM confirmation, correction on HCM business rejection, and reconciliation-based drift repair.
+
+The remaining sections are retained as historical implementation checkpoints. They are useful for traceability, but the primary reviewer path is Sections 3 through 9 plus the executable validation commands in Section 5.
 
 ## 10. Phase 4 Persistence Validation Plan
 
@@ -314,9 +325,54 @@ This slice is complete when:
 10. `POST /time-off-requests/:id/reject` returns `200`, persists `REJECTED`, and does not call HCM.
 11. Non-pending approve and reject attempts return `409` with `INVALID_REQUEST_STATE`.
 12. Focused service, controller, and e2e tests prove the lifecycle contract.
-13. Reconciliation and race-hardening scenarios remain pending later slices of implementation.
+13. Reconciliation, public error-contract standardization, and the broader coverage refresh are completed in later slices of implementation; Phase 12 reviewer polish remains.
 
-## 14. Open Questions To Revisit During Scaffolding
+## 14. Phase 8 Reconciliation Validation Plan
+
+This Phase 8 slice validates authoritative HCM batch reconciliation, replay behavior, and stale-batch protection.
+
+This slice is complete when:
+
+1. `POST /hcm/balances/batch` returns `200` for a fresh valid batch and reports deterministic summary counts.
+2. A fresh batch inserts new balance projections and updates existing projections from authoritative HCM values.
+3. Duplicate employee/location rows in a single batch return `400` with `DUPLICATE_RECONCILIATION_ROW`.
+4. Invalid batch payloads return `400` with `VALIDATION_ERROR`.
+5. Replaying an already-completed `sourceVersion` is an idempotent no-op at the service layer.
+6. A stale batch returns `409` with `STALE_SOURCE_VERSION` and performs no writes.
+7. Focused service tests prove replay handling, duplicate-row rejection, stale-batch rejection, and protection against overwriting fresher local state.
+8. Focused e2e tests prove the reconciliation HTTP contract and resulting balance projection reads.
+
+## 15. Phase 9 Race Conditions and Idempotency Validation Plan
+
+This Phase 9 slice hardens retry safety and approval concurrency to match the TRD's keyed serialized approval strategy.
+
+This slice is complete when:
+
+1. `POST /time-off-requests` still returns `200` on same-payload idempotent replay and `409` with `IDEMPOTENCY_KEY_CONFLICT` for conflicting payload reuse.
+2. Approval retry after prior HCM success returns the approved request without a second HCM deduction.
+3. Approval retry after transient HCM unavailability converges safely without double deduction.
+4. Concurrent approval of the same request produces one logical approval result and one HCM deduction.
+5. Concurrent approvals for different pending requests on the same `employeeId + locationId` both succeed when total requested days remain within balance.
+6. Concurrent approvals for different pending requests on the same `employeeId + locationId` do not both succeed when total requested days exceed balance.
+7. Focused service tests prove RC01, RC02, RC03, and approval replay semantics.
+8. Focused e2e tests preserve the existing create and approve HTTP contract while confirming retry-safe approval behavior.
+
+## 16. Phase 10 Error Handling and API Polish Validation Plan
+
+This Phase 10 slice standardizes the public ReadyOn API error envelope and proves that clients can rely on stable error codes plus safe, meaningful details.
+
+This slice is complete when:
+
+1. Public ReadyOn routes return one consistent error envelope shape under `error.code`, `error.message`, and optional `error.details`.
+2. Validation failures return `400` with `VALIDATION_ERROR` and structured detail entries that tests assert explicitly.
+3. Domain failures such as `BALANCE_NOT_FOUND`, `TIME_OFF_REQUEST_NOT_FOUND`, `INSUFFICIENT_BALANCE`, `INVALID_REQUEST_STATE`, `INVALID_EMPLOYEE_LOCATION`, `IDEMPOTENCY_KEY_CONFLICT`, and `HCM_UNAVAILABLE` retain stable codes and return operation-relevant details where appropriate.
+4. Reconciliation errors continue to return stable structured detail payloads for `DUPLICATE_RECONCILIATION_ROW` and `STALE_SOURCE_VERSION`.
+5. Unexpected server-side failures are mapped to a safe generic error response that does not expose raw SQLite, Prisma, HCM, or stack-trace details.
+6. Focused e2e tests assert both HTTP status and important error details for balance, request-lifecycle, and reconciliation error paths.
+7. README documents the common public API error envelope and representative domain error codes.
+8. Phase 9 retry and concurrency behavior remains green after the transport-level error-contract refactor.
+
+## 17. Residual Questions and Future Enhancements
 
 1. Which future recovery paths, if any, should transition to `FAILED` rather than remain retry-safe `PENDING` until recovery confirms the final outcome.
 2. Whether exact `sourceVersion` replay and `effectiveAt` ordering need additional reconciliation metadata.

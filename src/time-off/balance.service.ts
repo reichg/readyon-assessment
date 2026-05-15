@@ -28,7 +28,7 @@ export class BalanceService {
     );
 
     if (!balance) {
-      throw createBalanceNotFoundError();
+      throw createBalanceNotFoundError({ employeeId, locationId });
     }
 
     return toBalanceResponse(balance);
@@ -60,10 +60,18 @@ export class BalanceService {
     } catch (error) {
       if (error instanceof HcmClientError) {
         if (error.code === "INVALID_EMPLOYEE_LOCATION") {
-          throw createInvalidEmployeeLocationError();
+          throw createInvalidEmployeeLocationError({
+            employeeId,
+            locationId,
+            operation: "REFRESH_BALANCE",
+          });
         }
 
-        throw createHcmUnavailableError();
+        throw createHcmUnavailableError({
+          employeeId,
+          locationId,
+          operation: "REFRESH_BALANCE",
+        });
       }
 
       throw error;

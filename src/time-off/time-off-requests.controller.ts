@@ -7,13 +7,11 @@ import {
   Param,
   Post,
   Res,
-  UseFilters,
 } from "@nestjs/common";
 import { CreateTimeOffRequestDto } from "./dto/create-time-off-request.dto";
 import { TimeOffRequestIdParamsDto } from "./dto/time-off-request-id-params.dto";
 import type { TimeOffRequestResponse } from "./shapes/time-off-request-response";
 import { TimeOffRequestService } from "./time-off-request.service";
-import { TimeOffExceptionFilter } from "./time-off.exception-filter";
 
 interface HttpStatusResponse {
   status(statusCode: number): unknown;
@@ -26,7 +24,6 @@ const timeOffRequestsControllerRuntimeDependencies = [
 
 void timeOffRequestsControllerRuntimeDependencies;
 
-@UseFilters(TimeOffExceptionFilter)
 @Controller("time-off-requests")
 export class TimeOffRequestsController {
   constructor(

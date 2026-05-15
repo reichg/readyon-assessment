@@ -2,6 +2,8 @@ import type { TestingModule } from "@nestjs/testing";
 import { Test } from "@nestjs/testing";
 import { createHash } from "node:crypto";
 import { DatabaseService } from "../../src/database/database.service";
+import { HcmBalanceClient } from "../../src/hcm/hcm-balance.client";
+import { HcmTimeOffClient } from "../../src/hcm/hcm-time-off.client";
 import { createInsufficientBalanceError as createMockHcmInsufficientBalanceError } from "../../src/hcm/mock-hcm.errors";
 import { MockHcmService } from "../../src/hcm/mock-hcm.service";
 import { BalanceRepository } from "../../src/persistence/balance.repository";
@@ -25,6 +27,8 @@ describe("TimeOffRequestService", () => {
   let databasePath: string | undefined;
   let databaseService: DatabaseService;
   let balanceRepository: BalanceRepository;
+  let hcmBalanceClient: HcmBalanceClient;
+  let hcmTimeOffClient: HcmTimeOffClient;
   let hcmTransactionAuditRepository: HcmTransactionAuditRepository;
   let mockHcmService: MockHcmService;
   let timeOffRequestRepository: TimeOffRequestRepository;
@@ -41,6 +45,8 @@ describe("TimeOffRequestService", () => {
 
     databaseService = moduleRef.get(DatabaseService);
     balanceRepository = moduleRef.get(BalanceRepository);
+    hcmBalanceClient = moduleRef.get(HcmBalanceClient);
+    hcmTimeOffClient = moduleRef.get(HcmTimeOffClient);
     hcmTransactionAuditRepository = moduleRef.get(
       HcmTransactionAuditRepository,
     );
@@ -265,6 +271,209 @@ describe("TimeOffRequestService", () => {
         availableDays: 8,
       }),
     );
+  });
+
+  it("serializes concurrent approval attempts for the same request and submits to HCM once", async () => {
+    mockHcmService.reset(
+      createMockHcmSeedState({
+        balances: [createMockHcmBalance({ availableDays: 10 })],
+      }),
+    );
+    const created = await timeOffRequestService.createRequest({
+      employeeId: "emp_123",
+      locationId: "loc_001",
+      requestedDays: 2,
+    });
+    const releaseSubmission = createDeferred<void>();
+    const enteredSubmission = createDeferred<void>();
+    const originalSubmit =
+      hcmTimeOffClient.submitTimeOff.bind(hcmTimeOffClient);
+    const submitSpy = jest
+      .spyOn(hcmTimeOffClient, "submitTimeOff")
+      .mockImplementationOnce(async (input) => {
+        enteredSubmission.resolve();
+        await releaseSubmission.promise;
+
+        return originalSubmit(input);
+      });
+
+    const firstApproval = timeOffRequestService.approveRequest(
+      created.request.id,
+    );
+
+    await enteredSubmission.promise;
+
+    const secondApproval = timeOffRequestService.approveRequest(
+      created.request.id,
+    );
+
+    await flushMicrotasks();
+
+    expect(submitSpy).toHaveBeenCalledTimes(1);
+
+    releaseSubmission.resolve();
+
+    const [firstResult, secondResult] = await Promise.all([
+      firstApproval,
+      secondApproval,
+    ]);
+
+    expect(firstResult).toEqual(secondResult);
+    expect(firstResult).toEqual(
+      expect.objectContaining({
+        id: created.request.id,
+        status: "APPROVED",
+      }),
+    );
+    expect(submitSpy).toHaveBeenCalledTimes(1);
+    expect(
+      mockHcmService.getBalance({
+        employeeId: "emp_123",
+        locationId: "loc_001",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        availableDays: 8,
+      }),
+    );
+  });
+
+  it("serializes approvals per employee/location while one approval is in flight", async () => {
+    mockHcmService.reset(
+      createMockHcmSeedState({
+        balances: [createMockHcmBalance({ availableDays: 10 })],
+      }),
+    );
+    const firstRequest = await timeOffRequestService.createRequest({
+      employeeId: "emp_123",
+      locationId: "loc_001",
+      requestedDays: 2,
+    });
+    const secondRequest = await timeOffRequestService.createRequest({
+      employeeId: "emp_123",
+      locationId: "loc_001",
+      requestedDays: 3,
+    });
+    const releaseSubmission = createDeferred<void>();
+    const enteredSubmission = createDeferred<void>();
+    const originalSubmit =
+      hcmTimeOffClient.submitTimeOff.bind(hcmTimeOffClient);
+    const getBalanceSpy = jest.spyOn(hcmBalanceClient, "getBalance");
+
+    jest
+      .spyOn(hcmTimeOffClient, "submitTimeOff")
+      .mockImplementationOnce(async (input) => {
+        enteredSubmission.resolve();
+        await releaseSubmission.promise;
+
+        return originalSubmit(input);
+      });
+
+    const firstApproval = timeOffRequestService.approveRequest(
+      firstRequest.request.id,
+    );
+
+    await enteredSubmission.promise;
+
+    const secondApproval = timeOffRequestService.approveRequest(
+      secondRequest.request.id,
+    );
+
+    await flushMicrotasks();
+
+    expect(getBalanceSpy).toHaveBeenCalledTimes(1);
+
+    releaseSubmission.resolve();
+
+    const [firstResult, secondResult] = await Promise.all([
+      firstApproval,
+      secondApproval,
+    ]);
+
+    expect(firstResult).toEqual(
+      expect.objectContaining({
+        id: firstRequest.request.id,
+        status: "APPROVED",
+      }),
+    );
+    expect(secondResult).toEqual(
+      expect.objectContaining({
+        id: secondRequest.request.id,
+        status: "APPROVED",
+      }),
+    );
+    expect(
+      mockHcmService.getBalance({
+        employeeId: "emp_123",
+        locationId: "loc_001",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        availableDays: 5,
+      }),
+    );
+  });
+
+  it("allows only one concurrent approval to succeed when combined requests exceed the balance", async () => {
+    mockHcmService.reset(
+      createMockHcmSeedState({
+        balances: [createMockHcmBalance({ availableDays: 10 })],
+      }),
+    );
+    const firstRequest = await timeOffRequestService.createRequest({
+      employeeId: "emp_123",
+      locationId: "loc_001",
+      requestedDays: 6,
+    });
+    const secondRequest = await timeOffRequestService.createRequest({
+      employeeId: "emp_123",
+      locationId: "loc_001",
+      requestedDays: 5,
+    });
+
+    const results = await Promise.allSettled([
+      timeOffRequestService.approveRequest(firstRequest.request.id),
+      timeOffRequestService.approveRequest(secondRequest.request.id),
+    ]);
+    const fulfilled = results.filter(
+      (
+        result,
+      ): result is PromiseFulfilledResult<(typeof firstRequest)["request"]> =>
+        result.status === "fulfilled",
+    );
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    const approvedResult = fulfilled.at(0);
+    const rejectedResult = rejected.at(0);
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(approvedResult?.value).toEqual(
+      expect.objectContaining({
+        status: "APPROVED",
+      }),
+    );
+    expect(rejectedResult?.reason).toMatchObject({
+      code: "INSUFFICIENT_BALANCE",
+      message: "Available balance is insufficient for the requested time off.",
+    });
+
+    const firstPersisted = await timeOffRequestRepository.findById(
+      firstRequest.request.id,
+    );
+    const secondPersisted = await timeOffRequestRepository.findById(
+      secondRequest.request.id,
+    );
+    const statuses = [firstPersisted?.status, secondPersisted?.status].sort();
+
+    expect(statuses).toEqual(["APPROVED", "REJECTED"]);
+    expect(
+      mockHcmService.getBalance({
+        employeeId: "emp_123",
+        locationId: "loc_001",
+      }).availableDays,
+    ).toBeGreaterThanOrEqual(0);
   });
 
   it("rejects approval when HCM reports insufficient balance and refreshes the local projection", async () => {
@@ -662,4 +871,22 @@ function createPayloadHash(input: {
       }),
     )
     .digest("hex");
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks(iterations = 4): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
 }

@@ -9,6 +9,7 @@ import { PersistenceConflictError } from "../persistence/persistence.errors";
 import type { TimeOffRequestRecord } from "../persistence/shapes/time-off-request.types";
 import { TimeOffRequestLifecycleRepository } from "../persistence/time-off-request-lifecycle.repository";
 import { TimeOffRequestRepository } from "../persistence/time-off-request.repository";
+import { ApprovalConcurrencyGate } from "./approval-concurrency-gate";
 import type { CreateTimeOffRequestResult } from "./shapes/create-time-off-request-result";
 import type { TimeOffRequestResponse } from "./shapes/time-off-request-response";
 import {
@@ -42,6 +43,8 @@ export class TimeOffRequestService {
     private readonly timeOffRequestLifecycleRepository: TimeOffRequestLifecycleRepository,
     @Inject(TimeOffRequestRepository)
     private readonly timeOffRequestRepository: TimeOffRequestRepository,
+    @Inject(ApprovalConcurrencyGate)
+    private readonly approvalConcurrencyGate: ApprovalConcurrencyGate,
   ) {}
 
   async createRequest(
@@ -67,7 +70,13 @@ export class TimeOffRequestService {
     );
 
     if (balance && balance.availableDays < input.requestedDays) {
-      throw createInsufficientBalanceError();
+      throw createInsufficientBalanceError({
+        employeeId: input.employeeId,
+        locationId: input.locationId,
+        requestedDays: input.requestedDays,
+        availableDays: balance.availableDays,
+        source: "LOCAL_PROJECTION",
+      });
     }
 
     try {
@@ -98,7 +107,10 @@ export class TimeOffRequestService {
           return resolveIdempotentRequest(existingRequest, payloadHash);
         }
 
-        throw createIdempotencyKeyConflictError();
+        throw createIdempotencyKeyConflictError({
+          operation: "CREATE_TIME_OFF_REQUEST",
+          reason: "PAYLOAD_MISMATCH",
+        });
       }
 
       throw error;
@@ -114,12 +126,29 @@ export class TimeOffRequestService {
   async approveRequest(id: string): Promise<TimeOffRequestResponse> {
     const request = await this.findRequestOrThrow(id);
 
+    return this.approvalConcurrencyGate.runExclusive(
+      request.employeeId,
+      request.locationId,
+      async () => this.approveRequestWithinGate(id),
+    );
+  }
+
+  private async approveRequestWithinGate(
+    id: string,
+  ): Promise<TimeOffRequestResponse> {
+    const request = await this.findRequestOrThrow(id);
+
     if (request.status === "APPROVED") {
       return toTimeOffRequestResponse(request);
     }
 
     if (request.status !== "PENDING") {
-      throw createInvalidRequestStateError();
+      throw createInvalidRequestStateError({
+        requestId: request.id,
+        operation: "APPROVE_TIME_OFF",
+        currentStatus: request.status,
+        expectedStatus: "PENDING",
+      });
     }
 
     const checkedAt = new Date().toISOString();
@@ -143,6 +172,13 @@ export class TimeOffRequestService {
             code: "INSUFFICIENT_BALANCE",
             message:
               "Available balance is insufficient for the requested time off.",
+            details: {
+              employeeId: request.employeeId,
+              locationId: request.locationId,
+              requestedDays: request.requestedDays,
+              availableDays: balance.availableDays,
+              source: "HCM",
+            },
           },
         );
       }
@@ -152,10 +188,19 @@ export class TimeOffRequestService {
           await this.persistRejectedApproval(request, undefined, {
             code: "INVALID_EMPLOYEE_LOCATION",
             message: error.message,
+            details: {
+              requestId: request.id,
+              employeeId: request.employeeId,
+              locationId: request.locationId,
+              operation: "APPROVE_TIME_OFF",
+            },
           });
         }
 
-        throw createHcmUnavailableError();
+        throw createHcmUnavailableError({
+          requestId: request.id,
+          operation: "APPROVE_TIME_OFF",
+        });
       }
 
       throw error;
@@ -207,6 +252,17 @@ export class TimeOffRequestService {
               code: "INSUFFICIENT_BALANCE",
               message:
                 "Available balance is insufficient for the requested time off.",
+              details: {
+                employeeId: request.employeeId,
+                locationId: request.locationId,
+                requestedDays: request.requestedDays,
+                ...(projection
+                  ? {
+                      availableDays: projection.availableDays,
+                      source: "HCM",
+                    }
+                  : {}),
+              },
             },
             audit.id,
           );
@@ -219,12 +275,21 @@ export class TimeOffRequestService {
             {
               code: "INVALID_EMPLOYEE_LOCATION",
               message: error.message,
+              details: {
+                requestId: request.id,
+                employeeId: request.employeeId,
+                locationId: request.locationId,
+                operation: "APPROVE_TIME_OFF",
+              },
             },
             audit.id,
           );
         }
 
-        throw createHcmUnavailableError();
+        throw createHcmUnavailableError({
+          requestId: request.id,
+          operation: "APPROVE_TIME_OFF",
+        });
       }
 
       throw error;
@@ -235,7 +300,12 @@ export class TimeOffRequestService {
     const request = await this.findRequestOrThrow(id);
 
     if (request.status !== "PENDING") {
-      throw createInvalidRequestStateError();
+      throw createInvalidRequestStateError({
+        requestId: request.id,
+        operation: "REJECT_TIME_OFF",
+        currentStatus: request.status,
+        expectedStatus: "PENDING",
+      });
     }
 
     const rejectedRequest = await this.timeOffRequestRepository.updateStatus({
@@ -244,7 +314,12 @@ export class TimeOffRequestService {
     });
 
     if (!rejectedRequest) {
-      throw createInvalidRequestStateError();
+      throw createInvalidRequestStateError({
+        requestId: request.id,
+        operation: "REJECT_TIME_OFF",
+        currentStatus: "UNKNOWN",
+        expectedStatus: "PENDING",
+      });
     }
 
     return toTimeOffRequestResponse(rejectedRequest);
@@ -254,7 +329,7 @@ export class TimeOffRequestService {
     const request = await this.timeOffRequestRepository.findById(id);
 
     if (!request) {
-      throw createTimeOffRequestNotFoundError();
+      throw createTimeOffRequestNotFoundError({ requestId: id });
     }
 
     return request;
@@ -268,7 +343,10 @@ export class TimeOffRequestService {
 
     if (existingAudit) {
       if (existingAudit.status !== "STARTED") {
-        throw createHcmUnavailableError();
+        throw createHcmUnavailableError({
+          requestId: externalRequestId,
+          operation: "APPROVE_TIME_OFF",
+        });
       }
 
       return existingAudit;
@@ -292,7 +370,10 @@ export class TimeOffRequestService {
           return racedAudit;
         }
 
-        throw createHcmUnavailableError();
+        throw createHcmUnavailableError({
+          requestId: externalRequestId,
+          operation: "APPROVE_TIME_OFF",
+        });
       }
 
       throw error;
@@ -309,7 +390,11 @@ export class TimeOffRequestService {
           lastSyncedAt: string;
         }
       | undefined,
-    failure: { code: string; message: string },
+    failure: {
+      code: string;
+      message: string;
+      details?: Record<string, unknown>;
+    },
     auditId?: string,
   ): Promise<never> {
     const updatedAt = projection?.lastSyncedAt ?? new Date().toISOString();
@@ -333,14 +418,32 @@ export class TimeOffRequestService {
       });
 
     if (!rejectedRequest) {
-      throw createInvalidRequestStateError();
+      throw createInvalidRequestStateError({
+        requestId: request.id,
+        operation: "APPROVE_TIME_OFF",
+        currentStatus: "UNKNOWN",
+        expectedStatus: "PENDING",
+      });
     }
 
     if (failure.code === "INVALID_EMPLOYEE_LOCATION") {
-      throw createApprovalInvalidEmployeeLocationError();
+      throw createApprovalInvalidEmployeeLocationError(
+        failure.details ?? {
+          requestId: request.id,
+          employeeId: request.employeeId,
+          locationId: request.locationId,
+          operation: "APPROVE_TIME_OFF",
+        },
+      );
     }
 
-    throw createInsufficientBalanceError();
+    throw createInsufficientBalanceError(
+      failure.details ?? {
+        employeeId: request.employeeId,
+        locationId: request.locationId,
+        requestedDays: request.requestedDays,
+      },
+    );
   }
 
   private async tryLoadLatestBalanceProjection(
@@ -380,7 +483,12 @@ export class TimeOffRequestService {
       return toTimeOffRequestResponse(currentRequest);
     }
 
-    throw createInvalidRequestStateError();
+    throw createInvalidRequestStateError({
+      requestId: id,
+      operation: "APPROVE_TIME_OFF",
+      currentStatus: currentRequest.status,
+      expectedStatus: "APPROVED",
+    });
   }
 }
 
@@ -389,7 +497,10 @@ function resolveIdempotentRequest(
   payloadHash: string,
 ): CreateTimeOffRequestResult {
   if (existingRequest.idempotencyPayloadHash !== payloadHash) {
-    throw createIdempotencyKeyConflictError();
+    throw createIdempotencyKeyConflictError({
+      operation: "CREATE_TIME_OFF_REQUEST",
+      reason: "PAYLOAD_MISMATCH",
+    });
   }
 
   return {
