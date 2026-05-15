@@ -73,20 +73,13 @@ pnpm start:dev
 
 ### Enable live mock HCM locally
 
-PowerShell:
+Common local env variables in `.env`.
 
-```powershell
-$env:READYON_ENABLE_MOCK_HCM_HTTP = "true"
-pnpm start:dev
 ```
-
-Bash:
-
-```bash
-READYON_ENABLE_MOCK_HCM_HTTP=true pnpm start:dev
+READYON_ENABLE_MOCK_HCM_HTTP=true
+READYON_TELEMETRY_FORMAT=pretty
+PORT=3000
 ```
-
-These shell examples are useful for one-off overrides when you do not want to change your local `.env`.
 
 With `READYON_ENABLE_MOCK_HCM_HTTP=true`, the same Nest process exposes `/mock-hcm/*` for local Postman testing. Those routes are still not part of the public ReadyOn API, but they do mutate the same in-process mock HCM state used by public balance refresh and approval flows. The default seed is `emp_123` at `loc_001` with `10` available days, and the mock state resets when the process restarts.
 
