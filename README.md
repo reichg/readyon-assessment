@@ -1,16 +1,35 @@
 # ReadyOn Time-Off Microservice
 
+ReadyOn uses this service to manage time-off requests while keeping the HCM system authoritative for balances and deductions. The service provides fast local reads, approval-time HCM confirmation, and reconciliation paths that repair drift when HCM changes independently.
+
+## Table of Contents
+
+- [Project Summary](#project-summary)
+- [Reviewer Quick Start](#reviewer-quick-start)
+- [Implemented Scope](#implemented-scope)
+- [API Overview](#api-overview)
+- [Consistency Model](#consistency-model)
+- [Validation and Coverage](#validation-and-coverage)
+- [Architecture Overview](#architecture-overview)
+- [Known Limitations and Tradeoffs](#known-limitations-and-tradeoffs)
+- [Future Improvements](#future-improvements)
+- [Appendix: Phase Checklist](#appendix-phase-checklist)
+
 ## Project Summary
 
-This repository is the final take-home submission for the ReadyOn Time-Off Microservice.
-
-It delivers a NestJS + Prisma + SQLite backend that:
+This repository is the ReadyOn Time-Off Microservice take-home submission. It delivers a NestJS + Prisma + SQLite backend that:
 
 - exposes REST endpoints for balances, time-off requests, and reconciliation;
-- treats HCM as the source of truth for entitlement and final deduction state;
-- keeps a local balance projection for fast reads, defensive create-time validation, and operator visibility;
-- confirms balance with HCM before approval and corrects drift through reconciliation; and
-- proves the core business risks with focused Jest and Supertest coverage.
+- treats HCM as the source of truth for entitlement and deduction state;
+- keeps a local balance projection for fast reads, defensive validation, and operator visibility;
+- re-confirms with HCM before approval so cached data alone cannot approve time off; and
+- uses a focused Jest and Supertest suite to prove the main business risks.
+
+The main reviewer documents are:
+
+- `README.md` for the quick evaluation path and current-state summary;
+- `TRD.md` for architecture, tradeoffs, and consistency decisions; and
+- `TEST_PLAN.md` for the risk-driven test matrix and validation scope.
 
 ## Reviewer Quick Start
 
@@ -21,13 +40,22 @@ It delivers a NestJS + Prisma + SQLite backend that:
 
 ### Fastest evaluation path
 
-The fastest reviewer path is:
+Run the repository in this order:
 
-1. Run `pnpm install`.
-2. Run `pnpm build`, `pnpm lint`, `pnpm test`, `pnpm test:e2e`, and `pnpm test:cov`.
-3. Open `coverage/lcov-report/index.html` for the HTML coverage summary.
-4. Read `TRD.md` for the architecture, consistency model, API contract, and tradeoffs.
-5. Read `TEST_PLAN.md` for the risk-driven scenario matrix and validation scope.
+```bash
+pnpm install
+pnpm build
+pnpm lint
+pnpm test
+pnpm test:e2e
+pnpm test:cov
+```
+
+Then review:
+
+1. `coverage/lcov-report/index.html` for the HTML coverage report.
+2. `TRD.md` for the system design and tradeoffs.
+3. `TEST_PLAN.md` for the scenario matrix and risk coverage.
 
 ### Run the service locally
 
@@ -38,73 +66,23 @@ pnpm start:dev
 - Base URL: `http://localhost:3000`
 - Smoke check: `GET /health`
 - Optional overrides: `PORT`, `READYON_DB_PATH`, or `DATABASE_URL=file:/absolute/path/to/readyon.sqlite`
-- `README.md`, `TRD.md`, and `TEST_PLAN.md` describe the final shipped state. `given-task.md` and `readyon_timeoff_agent_instructions.md` are useful as exercise and workflow provenance, but they are not the primary reviewer guide.
+
+This README, `TRD.md`, and `TEST_PLAN.md` describe the shipped repository state. `given-task.md` and `readyon_timeoff_agent_instructions.md` are useful as exercise provenance, but they are not the primary reviewer path.
 
 ## Implemented Scope
 
-- Public ReadyOn balance read and refresh endpoints
-- Time-off request create, get, approve, and reject lifecycle
-- Approval-time HCM confirmation and local projection correction on authoritative HCM outcomes
-- Authoritative batch reconciliation with replay-safe and stale-batch handling
-- Consistent public API error envelope with stable error codes
-- Create-time idempotency plus approval replay safety
-- Keyed in-process approval serialization per `employeeId + locationId`
-- Deterministic mock-backed HCM behavior for the take-home runtime, with a separate `/mock-hcm/*` HTTP contract mounted only in test composition
-
-```bash
-pnpm install
-pnpm build
-pnpm lint
-pnpm test
-pnpm test:e2e
-pnpm test:cov
-pnpm start:dev
-```
-
-## Phase Checklist
-
-- [x] Phase 0 - Project planning and README
-- [x] Phase 1 - Technical Requirements Document
-- [x] Phase 2 - Test plan
-- [x] Phase 3 - NestJS + SQLite scaffolding
-- [x] Phase 4 - Data model and persistence
-- [x] Phase 5 - Mock HCM
-- [x] Phase 6 - Balance API
-- [x] Phase 7 - Time-off request lifecycle
-- [x] Phase 8 - Batch reconciliation
-- [x] Phase 9 - Race conditions and idempotency hardening
-- [x] Phase 10 - Error handling and API polish
-- [x] Phase 11 - Coverage and final test proof
-- [x] Phase 12 - Final evaluator review
-
-## Architecture Overview
-
-The implementation is organized by controller, service, repository, and adapter ownership rather than a strict hexagonal split with abstract domain ports.
-
-1. API and transport
-   - Thin Nest controllers for balances, time-off requests, reconciliation ingest, and health.
-   - Shared validation and a single public ReadyOn exception filter for consistent error envelopes.
-
-2. Application services
-   - `BalanceService`, `TimeOffRequestService`, and `ReconciliationService` own request orchestration, status transitions, idempotency handling, and projection updates.
-   - `ApprovalConcurrencyGate` serializes approval work per `employeeId + locationId` in-process.
-
-3. Persistence layer
-   - Prisma-backed SQLite repositories own storage mapping, constraints, and short local transactions.
-   - Feature modules wire the repositories they use directly; persistence infrastructure is shared, but repository ownership stays feature-local.
-
-4. HCM integration
-   - Separate HCM balance and time-off clients back the public app flows.
-   - In this take-home, those clients are backed by an in-repo mock HCM service for deterministic behavior.
-   - A separate `MockHcmHttpModule` mounts `/mock-hcm/*` only in tests for upstream contract coverage.
-
-5. Infrastructure
-   - Database bootstrap, Prisma lifecycle, HTTP telemetry, and request correlation are centralized in shared infrastructure modules.
-   - Services stay framework-light, but they depend on concrete repositories and HCM adapters rather than abstract ports.
+- Balance read and refresh endpoints.
+- Time-off request create, get, approve, and reject lifecycle.
+- Approval-time HCM confirmation and authoritative balance correction.
+- Batch reconciliation with replay-safe and stale-batch handling.
+- Stable public API error envelopes and error codes.
+- Create-time idempotency and approval replay safety.
+- In-process approval serialization keyed by `employeeId + locationId`.
+- Mock-backed HCM behavior for deterministic tests, with a separate `/mock-hcm/*` HTTP surface mounted only in test composition.
 
 ## API Overview
 
-Public ReadyOn endpoints:
+### Public ReadyOn endpoints
 
 - `GET /balances/:employeeId/:locationId`
 - `POST /balances/:employeeId/:locationId/refresh`
@@ -114,18 +92,18 @@ Public ReadyOn endpoints:
 - `POST /time-off-requests/:id/reject`
 - `POST /hcm/balances/batch`
 
-Mock HCM endpoints for test composition only:
+### Mock HCM endpoints used in tests
 
 - `GET /mock-hcm/balances/:employeeId/:locationId`
 - `POST /mock-hcm/time-off`
 - `POST /mock-hcm/balances/:employeeId/:locationId/adjust`
 - `GET /mock-hcm/balances/batch`
 
-The mock HCM HTTP surface is not mounted in the public app and does not share the ReadyOn public error envelope. It exists to exercise upstream contract behavior in focused tests.
+The mock HCM HTTP surface is not part of the public ReadyOn API. It exists to exercise upstream behavior in focused tests.
 
-## Common API Errors
+### Public error envelope
 
-Public ReadyOn endpoints return non-2xx responses in one stable envelope:
+Non-2xx ReadyOn responses use one stable envelope:
 
 ```json
 {
@@ -143,14 +121,6 @@ Public ReadyOn endpoints return non-2xx responses in one stable envelope:
 }
 ```
 
-Contract rules:
-
-- `error.code` is the stable client-facing identifier to assert in tests and use in callers.
-- `error.message` is human-readable and safe to display or log.
-- `error.details` is optional and only contains allow-listed domain context.
-- Validation errors use `error.details.violations` for the constraint list.
-- Unexpected server-side failures return `INTERNAL_SERVER_ERROR` without raw SQLite, Prisma, HCM, or stack-trace details.
-
 Representative public error codes:
 
 - `VALIDATION_ERROR`
@@ -164,89 +134,107 @@ Representative public error codes:
 - `DUPLICATE_RECONCILIATION_ROW`
 - `STALE_SOURCE_VERSION`
 
-Operation notes:
+## Consistency Model
 
-- `INVALID_EMPLOYEE_LOCATION` returns `404` for balance refresh because the lookup target is missing in HCM.
-- `INVALID_EMPLOYEE_LOCATION` returns `409` for approval because the pending request becomes a terminal business rejection.
+The system uses a conservative consistency model:
 
-## Consistency Model Summary
-
-The chosen consistency model is intentionally conservative:
-
-- HCM is the source of truth for entitlement and deduction.
-- ReadyOn stores a local balance projection for reads, UX, and resilience.
-- Create-time validation may reject obviously impossible requests using the local projection.
+- HCM is the source of truth for balance and deduction outcomes.
+- ReadyOn stores a local balance projection for fast reads and user experience.
+- Create-time validation can reject obviously impossible requests using the local projection.
 - Approval never trusts the local projection alone; it must confirm against HCM.
-- The local projection is updated only after authoritative HCM confirmation, including business-denial correction paths, or after authoritative reconciliation.
-- Batch reconciliation is required to repair drift caused by external HCM changes or partial failures.
-- Create requests use a client idempotency key.
-- Approval retries use a stable external request id derived from the ReadyOn request id.
-- Concurrency control is serialized per `employeeId + locationId` in the take-home implementation.
+- ReadyOn updates the local projection only after an authoritative HCM outcome or an authoritative reconciliation batch.
+- Batch reconciliation repairs drift caused by external HCM changes, missed refreshes, or partial failures.
+- Create requests rely on a client idempotency key.
+- Approval retries rely on a stable external request id derived from the ReadyOn request id.
+- Approval work is serialized per `employeeId + locationId` in this take-home implementation.
 
-## What the Employee Can Trust
+What a reviewer should expect from the balance experience:
 
-- `GET /balances/:employeeId/:locationId` returns ReadyOn's latest known local projection and includes `lastSyncedAt` so the employee can see when it was last synchronized.
-- `POST /balances/:employeeId/:locationId/refresh` asks HCM for the current authoritative balance and updates the local projection immediately.
-- Approval never trusts the cached balance alone: ReadyOn re-checks HCM before approving, corrects the projection when HCM rejects, and relies on reconciliation to repair any remaining drift from external HCM-side changes.
+- `GET /balances/:employeeId/:locationId` returns the latest known local projection.
+- `POST /balances/:employeeId/:locationId/refresh` updates that projection from HCM.
+- Approval re-checks HCM before success and corrects drift when HCM rejects for business reasons.
 
-## Reconciliation Strategy
+## Validation and Coverage
 
-- `effectiveAt` is the primary freshness signal.
-- `sourceVersion` is the replay key for exact batch-idempotency.
-- Exact `sourceVersion` replay is a no-op.
-- Older `effectiveAt` values are rejected as stale.
-- Duplicate `employeeId + locationId` rows within a batch are rejected as invalid input.
-- Reconciliation is the drift-repair mechanism for external HCM changes, missed refreshes, and partial failure recovery.
-
-## Testing Strategy and Coverage
-
-The validation strategy is risk-driven rather than coverage-driven. The implemented suite includes:
+The validation strategy is risk-driven rather than coverage-driven. The repository includes:
 
 - unit tests for validation, state transitions, stale-batch logic, and idempotency checks;
-- integration tests for services, repositories, and SQLite-backed invariants;
-- Supertest end-to-end coverage for the HTTP contract;
-- mock HCM contract tests for balance lookups, deductions, adjustments, transient failures, batch snapshots, and duplicate submissions;
-- reconciliation tests for stale, duplicate, and corrective batch behavior;
-- race-condition and idempotency tests for concurrent approvals and retries; and
-- coverage output captured under `coverage/` and refreshed with the current validation suite.
+- integration tests for services, repositories, SQLite-backed invariants, reconciliation, and concurrency behavior;
+- Supertest e2e coverage for the public HTTP contract;
+- mock HCM contract tests for balance lookup, deduction, idempotency, transient failures, and batch snapshots; and
+- generated coverage output under `coverage/`.
 
-The current implementation already proves:
+The main validation commands are:
 
-- the Nest app boots and serves `GET /health`;
-- Prisma applies the SQLite schema through the shared database bootstrap path;
-- the mock HCM contract supports valid lookups, invalid dimensions, atomic deduction, idempotent duplicate external request ids, transient failures, independent balance changes, and batch snapshots via isolated tests;
-- the public balance API supports local projection reads, HCM-backed refresh, stable not-found handling, clean invalid-dimension handling, and retry-safe upstream-unavailable handling; and
-- the public request lifecycle supports request creation, request lookup by id, approval-time HCM confirmation, authoritative projection correction on approval-time business denial, rejection without HCM deduction, stable validation handling, local insufficient-balance rejection, transient upstream failure handling that leaves requests retry-safe `PENDING`, and idempotent create replay and approval replay behavior; and
-- the reconciliation slice supports fresh batch ingest, replay-safe no-op handling, duplicate-row rejection, stale-batch rejection, and projection correction from authoritative HCM snapshots; and
-- the phase 9 hardening slice proves same-request approval replay, retry-after-transient-HCM failure convergence, and concurrent approval behavior for shared employee/location balance buckets; and
-- the phase 10 public error-contract slice proves structured domain error details, consistent validation envelopes, and safe generic fallback behavior for unexpected internal failures; and
-- the build, lint, unit, e2e, and coverage commands are the final reviewer validation path.
+```bash
+pnpm build
+pnpm lint
+pnpm test
+pnpm test:e2e
+pnpm test:cov
+```
 
-Target thresholds after implementation:
+The committed coverage artifact currently reports:
 
-- Statements: 80%+
-- Branches: 75%+
-- Functions: 80%+
-- Lines: 80%+
+- Statements: 93.70%
+- Branches: 81.57%
+- Functions: 91.13%
+- Lines: 93.37%
 
-The current coverage artifact reports 93.70% statements, 81.57% branches, 91.13% functions, and 93.37% lines, exceeding the plan thresholds.
+For the detailed risk-to-scenario proof map, use `TEST_PLAN.md`.
+
+## Architecture Overview
+
+The implementation is organized around clear controller, service, repository, and adapter ownership.
+
+1. API layer
+   Thin Nest controllers expose transport-only behavior for balances, requests, reconciliation, and health.
+
+2. Application services
+   `BalanceService`, `TimeOffRequestService`, and `ReconciliationService` own orchestration, lifecycle rules, idempotency handling, and projection updates.
+
+3. Concurrency control
+   `ApprovalConcurrencyGate` serializes approval work per `employeeId + locationId` in-process.
+
+4. Persistence
+   Prisma-backed SQLite repositories own storage access, constraints, and short local transactions.
+
+5. HCM integration
+   Separate HCM balance and time-off clients back the public flows, while the mock HCM HTTP module is used only for test composition.
+
+6. Shared infrastructure
+   Database bootstrap, Prisma lifecycle, HTTP telemetry, and request correlation live in shared infrastructure modules.
 
 ## Known Limitations and Tradeoffs
 
-- SQLite is required by the exercise and favors correctness and simplicity over horizontal write scale.
-- The phase-one concurrency plan assumes a single service instance and keyed in-process serialization for approval safety.
-- Local balance reads are intentionally eventually consistent until refresh or batch reconciliation occurs.
-- The current HCM dependency is exercise-local and mock-backed: the app uses in-repo mock-backed HCM clients for deterministic runtime behavior, while the separate mock HCM HTTP module remains test-only.
-- Telemetry safety relies on allow-listed event payloads and focused tests; there is no centralized redaction layer, and HCM client edges are not instrumented separately.
-- Authentication, authorization, payroll integrations, UI, and production deployment are intentionally out of scope.
+- SQLite is the exercise database and favors correctness and simplicity over write scale.
+- The concurrency approach assumes a single service instance and in-process keyed serialization.
+- Local balance reads are eventually consistent until refresh or batch reconciliation occurs.
+- The current HCM dependency is exercise-local and mock-backed, not a production vendor integration.
+- Telemetry is intentionally focused and uses allow-listed metadata rather than a full observability platform.
+- Authentication, authorization, payroll integrations, UI, and deployment concerns are out of scope.
 
 ## Future Improvements
 
-The final submission should call out at least these follow-up areas:
+1. Add distributed locking or stronger multi-instance concurrency control.
+2. Add production-grade migration, backup, and operational tooling.
+3. Add authentication and manager identity enforcement.
+4. Expand observability dashboards and alerting.
+5. Support fractional-day leave if the business requires it.
+6. Add vendor-facing HCM adapter contract tests.
 
-- distributed locking or stronger multi-instance concurrency control;
-- production-grade migrations, backup, and operational tooling;
-- authentication and manager identity enforcement;
-- richer observability dashboards and alerting;
-- fractional-day leave support if the business requires it; and
-- a real vendor-facing HCM adapter contract test suite.
+## Appendix: Phase Checklist
+
+- [x] Phase 0 - Project planning and README
+- [x] Phase 1 - Technical Requirements Document
+- [x] Phase 2 - Test plan
+- [x] Phase 3 - NestJS + SQLite scaffolding
+- [x] Phase 4 - Data model and persistence
+- [x] Phase 5 - Mock HCM
+- [x] Phase 6 - Balance API
+- [x] Phase 7 - Time-off request lifecycle
+- [x] Phase 8 - Batch reconciliation
+- [x] Phase 9 - Race conditions and idempotency hardening
+- [x] Phase 10 - Error handling and API polish
+- [x] Phase 11 - Coverage and final test proof
+- [x] Phase 12 - Final evaluator review

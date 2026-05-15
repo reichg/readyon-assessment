@@ -1,6 +1,22 @@
 # Test Plan
 
-## 1. Purpose
+This document is the reviewer-facing proof plan for the ReadyOn Time-Off Microservice. The main question it answers is which tests prove that balance integrity, request lifecycle safety, and HCM reconciliation hold under both normal and failure conditions.
+
+## Table of Contents
+
+- [Purpose](#purpose)
+- [Scope and References](#scope-and-references)
+- [Business Risks and Quality Goals](#business-risks-and-quality-goals)
+- [Test Levels and What Each Must Prove](#test-levels-and-what-each-must-prove)
+- [Environment and Validation Commands](#environment-and-validation-commands)
+- [Test Data and Fixture Strategy](#test-data-and-fixture-strategy)
+- [Scenario Matrix](#scenario-matrix)
+- [Coverage and Exit Criteria](#coverage-and-exit-criteria)
+- [Traceability Back to Design](#traceability-back-to-design)
+- [Residual Questions and Future Enhancements](#residual-questions-and-future-enhancements)
+- [Appendix: Historical Phase Validation Checkpoints](#appendix-historical-phase-validation-checkpoints)
+
+## Purpose
 
 This plan defines how the ReadyOn Time-Off Microservice will prove correctness before submission.
 
@@ -13,7 +29,7 @@ The system is considered high risk in four areas:
 
 The test strategy therefore prioritizes behavior proof over raw volume.
 
-## 2. Scope and References
+## Scope and References
 
 This plan covers:
 
@@ -30,7 +46,7 @@ Reference documents:
 - `README.md`
 - `readyon_timeoff_agent_instructions.md`
 
-## 3. Business Risks and Quality Goals
+## Business Risks and Quality Goals
 
 | Risk ID | Business risk                                                               | Quality goal                                                    |
 | ------- | --------------------------------------------------------------------------- | --------------------------------------------------------------- |
@@ -46,7 +62,7 @@ Reference documents:
 | R10     | Coverage looks high while critical branches remain untested                 | Coverage proof must include the critical failure paths          |
 | R11     | Boundary telemetry is missing or leaks sensitive internals                  | Key boundaries emit sanitized structured telemetry only         |
 
-## 4. Test Levels and What Each Must Prove
+## Test Levels and What Each Must Prove
 
 ### Unit tests
 
@@ -95,7 +111,7 @@ These tests prove the Phase 5 mock HCM itself is trustworthy as a regression dep
 
 These tests intentionally validate a separate upstream-style contract from the public ReadyOn API error envelope.
 
-## 5. Environment and Tooling Plan
+## Environment and Validation Commands
 
 Repository tooling:
 
@@ -117,15 +133,15 @@ pnpm test:e2e
 pnpm test:cov
 ```
 
-Current implemented proof:
+Current proof snapshot:
 
-- The repository has executable build, lint, unit, e2e, and coverage validation commands.
-- Persistence, mock HCM behavior, balance refresh, request lifecycle, reconciliation, concurrency hardening, and the public error contract are implemented and covered.
+- The repository exposes executable build, lint, unit, e2e, and coverage validation commands.
+- The implemented suite covers persistence, mock HCM behavior, balance refresh, request lifecycle, reconciliation, concurrency hardening, and the public error contract.
 - Public ReadyOn routes and mock HCM routes are validated separately: ReadyOn uses the public error envelope, while mock HCM tests assert the upstream-style mock contract directly.
-- The latest coverage artifact reports 93.70% statements, 81.57% branches, 91.13% functions, and 93.37% lines, exceeding the plan thresholds.
+- The committed coverage artifact reports 93.70% statements, 81.57% branches, 91.13% functions, and 93.37% lines.
 - The scenario matrix below is the primary reviewer-facing proof map.
 
-## 6. Test Data and Fixture Strategy
+## Test Data and Fixture Strategy
 
 1. Use deterministic employee/location pairs such as `emp_123` and `loc_001`.
 2. Seed balances explicitly for each test.
@@ -134,7 +150,9 @@ Current implemented proof:
 5. Use fixed timestamps and source versions where ordering matters.
 6. Use stable request ids and idempotency keys in retry scenarios.
 
-## 7. Scenario Matrix
+## Scenario Matrix
+
+This table is the main proof surface for the repository.
 
 Columns:
 
@@ -202,7 +220,7 @@ Columns:
 | E04  | Error handling       | R8   | Upstream failure error                                                              | e2e         | Returns `HCM_UNAVAILABLE` without raw upstream body                                                                                              |
 | E05  | Error handling       | R8   | No raw SQLite or stack trace leakage                                                | e2e         | Response body excludes internal exception details                                                                                                |
 
-## 8. Coverage and Exit Criteria
+## Coverage and Exit Criteria
 
 ### Target coverage thresholds
 
@@ -234,13 +252,13 @@ Columns:
 5. README includes the final coverage summary.
 6. The implemented test suite covers all required risks in this plan.
 
-### Current phase 11 proof snapshot
+### Current proof snapshot
 
 - The current coverage artifact under `coverage/` exceeds the threshold targets.
 - The current scenario matrix matches the implemented balance, request-lifecycle, reconciliation, idempotency, error-contract, and telemetry proof surface.
 - Final reviewer validation should rerun `pnpm build`, `pnpm lint`, `pnpm test`, `pnpm test:e2e`, and `pnpm test:cov`.
 
-## 9. Traceability Back to Design
+## Traceability Back to Design
 
 - `TRD.md` owns the architecture, consistency model, and tradeoff decisions.
 - `TEST_PLAN.md` owns the risk-to-scenario proof plan.
@@ -256,11 +274,21 @@ The final implementation is acceptable only if the tested behavior matches the T
 6. concurrency protection
 7. stable error contracts
 
-Employee balance accuracy is proven by the combined B01, B03, B06, A01, A04, and H04 scenarios: latest-known balance reads, explicit HCM refresh, approval-time HCM confirmation, correction on HCM business rejection, and reconciliation-based drift repair.
+Employee balance accuracy is proven by B01, B03, B06, A01, A04, and H04 together: latest-known balance reads, explicit HCM refresh, approval-time HCM confirmation, correction on HCM business rejection, and reconciliation-based drift repair.
 
-The remaining sections are retained as historical implementation checkpoints. They are useful for traceability, but the primary reviewer path is Sections 3 through 9 plus the executable validation commands in Section 5.
+The appendix below retains historical implementation checkpoints for traceability. The main reviewer path is the risk table, test-level summary, scenario matrix, and coverage section above.
 
-## 10. Phase 4 Persistence Validation Plan
+## Residual Questions and Future Enhancements
+
+1. Which future recovery paths, if any, should transition to `FAILED` rather than remain retry-safe `PENDING` until recovery confirms the final outcome.
+2. Whether exact `sourceVersion` replay and `effectiveAt` ordering need additional reconciliation metadata.
+3. Whether a dedicated HCM transaction audit table is sufficient or if a richer event log is needed.
+
+## Appendix: Historical Phase Validation Checkpoints
+
+These checkpoints capture how the implementation was validated phase by phase during delivery. They remain useful for traceability, but they are secondary to the main reviewer path above.
+
+### Phase 4 Persistence
 
 This phase validates the runtime scaffold and Prisma-backed persistence foundation. It does not claim that the domain behaviors in the scenario matrix are already implemented.
 
@@ -276,7 +304,7 @@ This phase is complete when:
 8. The database infrastructure remains explicitly imported by health and persistence ownership boundaries rather than exposed globally across the app.
 9. Boundary telemetry covers HTTP request lifecycle, database bootstrap and ping, and repository mutation outcomes with sanitized low-cardinality metadata.
 
-## 11. Phase 5 Mock HCM Validation Plan
+### Phase 5 Mock HCM
 
 This phase validates the mock HCM contract as a trustworthy upstream dependency before the public balance and request lifecycle APIs consume it.
 
@@ -291,7 +319,7 @@ This phase is complete when:
 7. Mock HCM state is reset between tests without relying on SQLite cleanup.
 8. `pnpm test -- test/hcm` passes before broader repository validation.
 
-## 12. Phase 6 Balance API Validation Plan
+### Phase 6 Balance API
 
 This phase validates the first public ReadyOn API slice for local balance reads and explicit HCM-backed refresh.
 
@@ -307,7 +335,7 @@ This phase is complete when:
 8. Focused e2e tests prove the balance read and refresh HTTP contract.
 9. Phase 5 mock HCM contract tests remain green as a regression dependency.
 
-## 13. Phase 7 Request Lifecycle Validation Plan
+### Phase 7 Request Lifecycle
 
 This Phase 7 slice validates the complete request lifecycle for create, get, approve, and reject before reconciliation and concurrency hardening land.
 
@@ -327,7 +355,7 @@ This slice is complete when:
 12. Focused service, controller, and e2e tests prove the lifecycle contract.
 13. Reconciliation, public error-contract standardization, and the broader coverage refresh are completed in later slices of implementation; Phase 12 reviewer polish remains.
 
-## 14. Phase 8 Reconciliation Validation Plan
+### Phase 8 Reconciliation
 
 This Phase 8 slice validates authoritative HCM batch reconciliation, replay behavior, and stale-batch protection.
 
@@ -342,7 +370,7 @@ This slice is complete when:
 7. Focused service tests prove replay handling, duplicate-row rejection, stale-batch rejection, and protection against overwriting fresher local state.
 8. Focused e2e tests prove the reconciliation HTTP contract and resulting balance projection reads.
 
-## 15. Phase 9 Race Conditions and Idempotency Validation Plan
+### Phase 9 Race Conditions and Idempotency
 
 This Phase 9 slice hardens retry safety and approval concurrency to match the TRD's keyed serialized approval strategy.
 
@@ -357,7 +385,7 @@ This slice is complete when:
 7. Focused service tests prove RC01, RC02, RC03, and approval replay semantics.
 8. Focused e2e tests preserve the existing create and approve HTTP contract while confirming retry-safe approval behavior.
 
-## 16. Phase 10 Error Handling and API Polish Validation Plan
+### Phase 10 Error Handling and API Polish
 
 This Phase 10 slice standardizes the public ReadyOn API error envelope and proves that clients can rely on stable error codes plus safe, meaningful details.
 
@@ -371,9 +399,3 @@ This slice is complete when:
 6. Focused e2e tests assert both HTTP status and important error details for balance, request-lifecycle, and reconciliation error paths.
 7. README documents the common public API error envelope and representative domain error codes.
 8. Phase 9 retry and concurrency behavior remains green after the transport-level error-contract refactor.
-
-## 17. Residual Questions and Future Enhancements
-
-1. Which future recovery paths, if any, should transition to `FAILED` rather than remain retry-safe `PENDING` until recovery confirms the final outcome.
-2. Whether exact `sourceVersion` replay and `effectiveAt` ordering need additional reconciliation metadata.
-3. Whether a dedicated HCM transaction audit table is sufficient or if a richer event log is needed.
