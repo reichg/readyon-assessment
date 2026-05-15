@@ -42,7 +42,7 @@ This plan covers:
 
 Reference documents:
 
-- `TRD.md`
+- `docs/TRD.md`
 - `README.md`
 
 ## Business Risks and Quality Goals
@@ -259,8 +259,8 @@ Columns:
 
 ## Traceability Back to Design
 
-- `TRD.md` owns the architecture, consistency model, and tradeoff decisions.
-- `TEST_PLAN.md` owns the risk-to-scenario proof plan.
+- `docs/TRD.md` owns the architecture, consistency model, and tradeoff decisions.
+- `docs/TEST_PLAN.md` owns the risk-to-scenario proof plan.
 - README owns the reviewer-facing summary and later the final coverage result.
 
 The final implementation is acceptable only if the tested behavior matches the TRD decisions on:

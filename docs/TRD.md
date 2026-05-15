@@ -801,7 +801,7 @@ The implemented test suite uses:
 6. race-condition tests for concurrent approvals; and
 7. coverage proof with targets of 80% statements, 75% branches, 80% functions, and 80% lines.
 
-The companion `TEST_PLAN.md` is the authoritative scenario matrix.
+The companion `docs/TEST_PLAN.md` is the authoritative scenario matrix.
 
 ## 20. Known Limitations and Future Work
 

@@ -28,8 +28,8 @@ This repository is the ReadyOn Time-Off Microservice take-home submission. It de
 The main reviewer documents are:
 
 - `README.md` for the quick evaluation path and current-state summary;
-- `TRD.md` for architecture, tradeoffs, and consistency decisions; and
-- `TEST_PLAN.md` for the risk-driven test matrix and validation scope.
+- `docs/TRD.md` for architecture, tradeoffs, and consistency decisions; and
+- `docs/TEST_PLAN.md` for the risk-driven test matrix and validation scope.
 
 ## Reviewer Quick Start
 
@@ -54,8 +54,8 @@ pnpm test:cov
 Then review:
 
 1. `coverage/lcov-report/index.html` for the HTML coverage report.
-2. `TRD.md` for the system design and tradeoffs.
-3. `TEST_PLAN.md` for the scenario matrix and risk coverage.
+2. `docs/TRD.md` for the system design and tradeoffs.
+3. `docs/TEST_PLAN.md` for the scenario matrix and risk coverage.
 
 ### Run the service locally
 
@@ -90,7 +90,7 @@ One useful manual flow is:
 3. `POST /balances/emp_123/loc_001/refresh`
 4. `GET /balances/emp_123/loc_001`
 
-This README, `TRD.md`, and `TEST_PLAN.md` describe the shipped repository state.
+This README, `docs/TRD.md`, and `docs/TEST_PLAN.md` describe the shipped repository state.
 
 ## Implemented Scope
 
@@ -204,7 +204,7 @@ The committed coverage artifact currently reports:
 - Functions: 91.13%
 - Lines: 93.37%
 
-For the detailed risk-to-scenario proof map, use `TEST_PLAN.md`.
+For the detailed risk-to-scenario proof map, use `docs/TEST_PLAN.md`.
 
 ## Architecture Overview
 
