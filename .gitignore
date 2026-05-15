@@ -8,7 +8,6 @@ data/**/*.sqlite-wal
 *.sqlite-shm
 *.sqlite-wal
 .env
-.env.*
 
 readyon_timeoff_agent_instructions.md
 given-task.md
