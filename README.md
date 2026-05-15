@@ -1,5 +1,8 @@
 # ReadyOn Time-Off Microservice
 
+[TRD](https://github.com/reichg/readyon-assessment/blob/main/docs/TRD.md)
+[TEST_PLAN](https://github.com/reichg/readyon-assessment/blob/main/docs/TEST_PLAN.md)
+
 ReadyOn uses this service to manage time-off requests while keeping the HCM system authoritative for balances and deductions. The service provides fast local reads, approval-time HCM confirmation, and reconciliation paths that repair drift when HCM changes independently.
 
 ## Table of Contents
