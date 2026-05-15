@@ -9,21 +9,22 @@ The target system is a production-ready NestJS + SQLite backend that:
 - exposes a REST API for balances and time-off requests;
 - treats HCM as the source of truth for entitlement and final deduction state;
 - keeps a local balance projection for fast reads and resilience;
-- will use a mock HCM in the automated test suite once Phase 5 lands; and
+- now uses a mock HCM in the automated test suite through an isolated test-only HTTP module; and
 - proves correctness with focused Jest and Supertest coverage.
 
 ## Current Status
 
-The repository now includes a validated Phase 4 persistence slice.
+The repository now includes a validated Phase 5 mock HCM slice, an implemented Phase 6 balance API slice, and a completed Phase 7 time-off request lifecycle slice.
 
 - `README.md` is present.
 - `TRD.md` is present.
 - `TEST_PLAN.md` is present.
 - `package.json`, `src/`, and `test/` now exist as a runnable NestJS + Prisma + SQLite backend foundation.
+- `src/hcm/` now includes a resettable in-memory mock HCM service; the app-facing balance refresh uses the same adapter against a deterministic in-process seed, and a dedicated test-only HTTP module covers the mock contract.
+- `src/time-off/` now includes public balance read and refresh routes with ReadyOn-owned error mapping and focused integration and e2e coverage.
+- `src/time-off/` now includes `POST /time-off-requests`, `GET /time-off-requests/:id`, `POST /time-off-requests/:id/approve`, and `POST /time-off-requests/:id/reject`, with approval-time HCM confirmation, local projection updates only after accepted HCM deductions, manager rejection without HCM deduction, create-time idempotency replay and conflict handling, and focused service, controller, and e2e coverage.
 - `coverage/` is generated locally by `pnpm test:cov`.
 - Domain behavior from later phases is still in progress.
-
-Implementation can now continue into Phase 5 and later domain slices after the persistence checks pass.
 
 ## Submission Goal
 
@@ -75,9 +76,9 @@ pnpm start:dev
 - [x] Phase 2 - Test plan
 - [x] Phase 3 - NestJS + SQLite scaffolding
 - [x] Phase 4 - Data model and persistence
-- [ ] Phase 5 - Mock HCM
-- [ ] Phase 6 - Balance API
-- [ ] Phase 7 - Time-off request lifecycle
+- [x] Phase 5 - Mock HCM
+- [x] Phase 6 - Balance API
+- [x] Phase 7 - Time-off request lifecycle
 - [ ] Phase 8 - Batch reconciliation
 - [ ] Phase 9 - Race conditions and idempotency hardening
 - [ ] Phase 10 - Error handling and API polish
@@ -102,7 +103,7 @@ The target service is organized into four primary layers:
 
 4. External integration layer
    - An HCM client adapter for real-time balance lookup and deduction submission.
-   - A planned mock HCM implementation for integration and end-to-end tests in Phase 5.
+   - A mock HCM implementation with resettable in-memory state and a dedicated test-only HTTP surface for contract tests.
 
 ## Planned API Overview
 
@@ -116,7 +117,7 @@ Target public ReadyOn endpoints:
 - `POST /time-off-requests/:id/reject`
 - `POST /hcm/balances/batch`
 
-Planned mock HCM endpoints for Phase 5 tests:
+Implemented mock HCM endpoints for test composition:
 
 - `GET /mock-hcm/balances/:employeeId/:locationId`
 - `POST /mock-hcm/time-off`
@@ -144,16 +145,19 @@ The final proof of quality will come from:
 - unit tests for validation, state transitions, stale-batch logic, and idempotency checks;
 - integration tests for services, repositories, and SQLite-backed invariants;
 - Supertest end-to-end coverage for the HTTP contract;
-- planned mock HCM contract tests for balance lookups, deductions, adjustments, and duplicate submissions;
+- mock HCM contract tests for balance lookups, deductions, adjustments, transient failures, batch snapshots, and duplicate submissions;
 - reconciliation tests for stale, duplicate, and corrective batch behavior;
 - race-condition and idempotency tests for concurrent approvals and retries; and
 - coverage output captured under `coverage/` and refreshed with the current validation suite.
 
-The current scaffold already proves:
+The current implementation already proves:
 
 - the Nest app boots and serves `GET /health`;
-- Prisma applies the SQLite schema through the shared database bootstrap path; and
-- the build, lint, unit, e2e, and coverage commands run successfully before domain logic is added.
+- Prisma applies the SQLite schema through the shared database bootstrap path;
+- the mock HCM contract supports valid lookups, invalid dimensions, atomic deduction, idempotent duplicate external request ids, transient failures, independent balance changes, and batch snapshots via isolated tests;
+- the public balance API supports local projection reads, HCM-backed refresh, stable not-found handling, clean invalid-dimension handling, and retry-safe upstream-unavailable handling; and
+- the public request lifecycle supports request creation, request lookup by id, approval-time HCM confirmation, local projection updates only after accepted HCM deductions, rejection without HCM deduction, stable validation handling, local insufficient-balance rejection, approval-time business rejection, transient upstream failure handling that leaves requests retry-safe `PENDING`, and idempotent create replay and approval retry behavior; and
+- the build, lint, unit, e2e, and coverage commands run successfully as implementation progresses.
 
 Target thresholds after implementation:
 
@@ -162,14 +166,14 @@ Target thresholds after implementation:
 - Functions: 80%+
 - Lines: 80%+
 
-Current local coverage after the persistence and telemetry slice is 95.12% statements, 84.81% branches, 97.14% functions, and 94.71% lines.
+The latest full coverage refresh, captured after the completed Phase 7 lifecycle slice, was 91.17% statements, 76.84% branches, 90.41% functions, and 90.55% lines.
 
 ## Known Tradeoffs
 
 - SQLite is required by the exercise and favors correctness and simplicity over horizontal write scale.
 - The phase-one concurrency plan assumes a single service instance and keyed in-process serialization for approval safety.
 - Local balance reads are intentionally eventually consistent until refresh or batch reconciliation occurs.
-- The planned mock HCM is intended for deterministic regression testing in Phase 5, not as proof against a real Workday or SAP contract.
+- The current HCM dependency is exercise-local and mock-backed: balance refresh uses an in-process adapter seed for deterministic runtime behavior, while the dedicated mock HCM HTTP module remains test-only.
 - Authentication, authorization, payroll integrations, UI, and production deployment are intentionally out of scope.
 
 ## Future Improvements

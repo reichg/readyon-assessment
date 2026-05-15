@@ -84,7 +84,7 @@ The service must therefore provide a usable local experience without ever treati
 5. HCM provides `effectiveAt` and `sourceVersion` on batch data.
 6. The initial implementation is single-instance and correctness-focused.
 7. Authentication is out of scope; manager actions are modeled as API commands only.
-8. Phase 5 will add an in-repository mock HCM that becomes the upstream dependency in tests.
+8. The repository includes an in-repository mock HCM that becomes the upstream dependency in tests.
 9. Prisma manages the SQLite schema and connection lifecycle, while repositories remain the application persistence boundary.
 
 ## 7. System Architecture
@@ -118,8 +118,8 @@ The service must therefore provide a usable local experience without ever treati
 5. Integration layer
    - `HcmClient`
 
-- Planned Phase 5 `MockHcmController`
-- Planned Phase 5 `MockHcmService`
+- `MockHcmService`
+- `MockHcmHttpModule`
 
 6. Shared layer
    - Validation helpers
@@ -134,7 +134,7 @@ The service must therefore provide a usable local experience without ever treati
 - Repositories depend on Prisma-backed SQLite infrastructure and repository-local contracts.
 - Only infrastructure concerns such as health checks or bootstrap lifecycle use the raw database service directly.
 - Database and telemetry infrastructure are imported explicitly by the modules that need them rather than being exposed as global shortcuts.
-- The planned mock HCM is isolated from the public ReadyOn domain logic and will support Phase 5 tests and local evaluation.
+- The mock HCM is isolated from the public ReadyOn domain logic and is mounted through a dedicated test-only HTTP module rather than the public `AppModule`.
 
 ### Persistence implementation notes
 
@@ -402,7 +402,8 @@ Status codes:
 
 ### Mock HCM API
 
-The planned mock HCM is test-only and is not part of the public ReadyOn API contract.
+The mock HCM is test-only and is not part of the public ReadyOn API contract.
+It is mounted through a dedicated `MockHcmHttpModule` for focused contract tests rather than the public `AppModule`.
 
 ## 10. HCM Integration Design
 

@@ -85,7 +85,7 @@ End-to-end tests are planned to prove the public HTTP contract using Supertest a
 
 ### Mock HCM contract tests
 
-These planned tests prove the Phase 5 mock HCM itself is trustworthy as a regression dependency:
+These tests prove the Phase 5 mock HCM itself is trustworthy as a regression dependency:
 
 - atomic deduction;
 - invalid dimension rejection;
@@ -119,15 +119,18 @@ Current status:
 
 - The Phase 3 scaffold now supports executable build, lint, unit, e2e, and coverage runs.
 - The Phase 4 persistence slice now uses Prisma-backed repository-contract parity over isolated SQLite files.
-- This refactor extends Phase 4 by tightening infrastructure ownership and adding safe boundary telemetry without changing the public API contract.
-- The scenario matrix below remains the target-state behavior plan for later phases.
+- The Phase 5 mock HCM now runs through a resettable in-memory service plus a dedicated test-only HTTP module for focused contract coverage.
+- The Phase 6 balance API now supports local balance reads and HCM-backed refresh with focused integration and e2e coverage.
+- The Phase 7 request lifecycle now supports create, get, approve, and reject behavior with focused service, controller, and e2e coverage for success, rejection, and transient failure paths.
+- Reconciliation and race-condition scenarios remain later-phase work.
+- The scenario matrix below remains the target-state behavior plan, now mixing implemented phase 7 lifecycle coverage with still-planned later-phase scenarios.
 
 ## 6. Test Data and Fixture Strategy
 
 1. Use deterministic employee/location pairs such as `emp_123` and `loc_001`.
 2. Seed balances explicitly for each test.
 3. Reset SQLite state between tests.
-4. Reset mock HCM state between tests once Phase 5 lands.
+4. Reset mock HCM state between tests using the service reset path and fresh per-test app composition.
 5. Use fixed timestamps and source versions where ordering matters.
 6. Use stable request ids and idempotency keys in retry scenarios.
 
@@ -155,7 +158,7 @@ Columns:
 | C04  | Create request       | R8   | Reject missing employeeId                                                 | unit        | Validation fails before persistence                                                        |
 | C05  | Create request       | R8   | Reject missing locationId                                                 | unit        | Validation fails before persistence                                                        |
 | C06  | Create request       | R1   | Reject request when known local balance is insufficient                   | integration | Returns `INSUFFICIENT_BALANCE` without creating a request                                  |
-| C07  | Create request       | R1   | Allow request creation when local balance is missing or stale             | integration | Request is still created as `PENDING`                                                      |
+| C07  | Create request       | R1   | Allow request creation when no local balance projection exists            | integration | Request is still created as `PENDING`                                                      |
 | C08  | Create request       | R3   | Duplicate create with same idempotency key and same payload               | integration | Returns the original request, no duplicate row                                             |
 | C09  | Create request       | R3   | Duplicate create with same idempotency key and different payload          | integration | Returns `IDEMPOTENCY_KEY_CONFLICT`                                                         |
 | A01  | Approval             | R1   | Approve valid pending request                                             | e2e         | HCM is called, request becomes `APPROVED`, local projection updates                        |
@@ -262,9 +265,59 @@ This phase is complete when:
 8. The database infrastructure remains explicitly imported by health and persistence ownership boundaries rather than exposed globally across the app.
 9. Boundary telemetry covers HTTP request lifecycle, database bootstrap and ping, and repository mutation outcomes with sanitized low-cardinality metadata.
 
-## 11. Open Questions To Revisit During Scaffolding
+## 11. Phase 5 Mock HCM Validation Plan
 
-1. Which concrete first-implementation paths, if any, should transition to `FAILED` rather than remain retry-safe `PENDING` until recovery confirms the final outcome.
-2. Whether an approval retry after an ambiguous HCM timeout should remain `PENDING` until confirmed.
-3. Whether exact `sourceVersion` replay and `effectiveAt` ordering need additional reconciliation metadata.
-4. Whether a dedicated HCM transaction audit table is sufficient or if a richer event log is needed.
+This phase validates the mock HCM contract as a trustworthy upstream dependency before the public balance and request lifecycle APIs consume it.
+
+This phase is complete when:
+
+1. The HCM feature provides a resettable in-memory mock service and a dedicated test-only HTTP module for the documented mock routes.
+2. Focused contract tests prove realtime balance lookup for valid and invalid employee/location dimensions.
+3. Focused tests prove atomic deduction and deterministic insufficient-balance rejection.
+4. Focused tests prove duplicate `externalRequestId` submissions are idempotent and do not deduct twice.
+5. Focused tests prove transient upstream failures remain retry-safe and do not mutate balance or idempotency state.
+6. Focused tests prove independent external balance adjustments and full batch snapshot output.
+7. Mock HCM state is reset between tests without relying on SQLite cleanup.
+8. `pnpm test -- test/hcm` passes before broader repository validation.
+
+## 12. Phase 6 Balance API Validation Plan
+
+This phase validates the first public ReadyOn API slice for local balance reads and explicit HCM-backed refresh.
+
+This phase is complete when:
+
+1. `GET /balances/:employeeId/:locationId` returns the latest known local balance projection.
+2. `GET /balances/:employeeId/:locationId` returns `404` with `BALANCE_NOT_FOUND` when no local projection exists.
+3. `POST /balances/:employeeId/:locationId/refresh` returns `200` and upserts the authoritative HCM balance into the local projection.
+4. Refresh preserves existing local projection data when HCM reports `INVALID_EMPLOYEE_LOCATION` or `HCM_UNAVAILABLE`.
+5. Refresh maps invalid employee/location pairs to `404` with `INVALID_EMPLOYEE_LOCATION`.
+6. Refresh maps transient upstream failures to `503` with `HCM_UNAVAILABLE`.
+7. Focused integration tests prove refresh insert, stale-data correction, and no-write behavior on upstream failure.
+8. Focused e2e tests prove the balance read and refresh HTTP contract.
+9. Phase 5 mock HCM contract tests remain green as a regression dependency.
+
+## 13. Phase 7 Request Lifecycle Validation Plan
+
+This Phase 7 slice validates the complete request lifecycle for create, get, approve, and reject before reconciliation and concurrency hardening land.
+
+This slice is complete when:
+
+1. `POST /time-off-requests` returns `201` on first create and persists a `PENDING` request without deducting HCM balance.
+2. `POST /time-off-requests` returns `200` on idempotent replay with the same payload.
+3. `POST /time-off-requests` returns `409` with `INSUFFICIENT_BALANCE` when the known local projection is already too low and does not persist a request.
+4. `POST /time-off-requests` returns `409` with `IDEMPOTENCY_KEY_CONFLICT` when the same idempotency key is reused with a different payload.
+5. `POST /time-off-requests` returns `400` with `VALIDATION_ERROR` for malformed payloads.
+6. `GET /time-off-requests/:id` returns `200` for an existing request and `404` with `TIME_OFF_REQUEST_NOT_FOUND` when the request does not exist.
+7. `POST /time-off-requests/:id/approve` returns `200` and persists `APPROVED` only after HCM accepts the deduction.
+8. Approval-time HCM business denials return stable `409` errors, persist `REJECTED`, and only update the local balance projection from authoritative HCM data.
+9. Approval-time upstream unavailability returns `503` and leaves the request retry-safe `PENDING`.
+10. `POST /time-off-requests/:id/reject` returns `200`, persists `REJECTED`, and does not call HCM.
+11. Non-pending approve and reject attempts return `409` with `INVALID_REQUEST_STATE`.
+12. Focused service, controller, and e2e tests prove the lifecycle contract.
+13. Reconciliation and race-hardening scenarios remain pending later slices of implementation.
+
+## 14. Open Questions To Revisit During Scaffolding
+
+1. Which future recovery paths, if any, should transition to `FAILED` rather than remain retry-safe `PENDING` until recovery confirms the final outcome.
+2. Whether exact `sourceVersion` replay and `effectiveAt` ordering need additional reconciliation metadata.
+3. Whether a dedicated HCM transaction audit table is sufficient or if a richer event log is needed.
