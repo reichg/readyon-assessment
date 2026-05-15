@@ -28,8 +28,8 @@ This repository is the ReadyOn Time-Off Microservice take-home submission. It de
 The main reviewer documents are:
 
 - `README.md` for the quick evaluation path and current-state summary;
-- `docs/TRD.md` for architecture, tradeoffs, and consistency decisions; and
-- `docs/TEST_PLAN.md` for the risk-driven test matrix and validation scope.
+- [TRD](https://github.com/reichg/readyon-assessment/blob/main/docs/TRD.md) for architecture, tradeoffs, and consistency decisions; and
+- [TEST_PLAN](https://github.com/reichg/readyon-assessment/blob/main/docs/TEST_PLAN.md) for the risk-driven test matrix and validation scope.
 
 ## Reviewer Quick Start
 
@@ -54,8 +54,8 @@ pnpm test:cov
 Then review:
 
 1. `coverage/lcov-report/index.html` for the HTML coverage report.
-2. `docs/TRD.md` for the system design and tradeoffs.
-3. `docs/TEST_PLAN.md` for the scenario matrix and risk coverage.
+2. [TRD](https://github.com/reichg/readyon-assessment/blob/main/docs/TRD.md) for the system design and tradeoffs.
+3. [TEST_PLAN](https://github.com/reichg/readyon-assessment/blob/main/docs/TEST_PLAN.md) for the scenario matrix and risk coverage.
 
 ### Run the service locally
 
