@@ -135,7 +135,7 @@ The service must therefore provide a usable local experience without ever treati
 5. HCM provides `effectiveAt` and `sourceVersion` on batch data.
 6. The initial implementation is single-instance and correctness-focused.
 7. Authentication is out of scope; manager actions are modeled as API commands only.
-8. The repository includes an in-repo mock-backed HCM adapter used by the app in this take-home, with a separate `MockHcmHttpModule` mounted only in tests for upstream contract coverage.
+8. The repository includes an in-repo mock-backed HCM adapter used by the app in this take-home, with a separate `MockHcmHttpModule` that can be mounted in local runtime through `READYON_ENABLE_MOCK_HCM_HTTP=true` for upstream-style manual and contract testing.
 9. Prisma manages the SQLite schema and connection lifecycle, while repositories remain the application persistence boundary.
 
 ## 7. System Architecture
@@ -190,7 +190,7 @@ The implementation keeps controllers thin and business rules out of controllers,
 - Repositories depend on Prisma-backed SQLite infrastructure and repository-local contracts.
 - Only infrastructure concerns such as health checks or bootstrap lifecycle use the raw database service directly.
 - Database and telemetry infrastructure are imported explicitly by the modules that need them rather than being exposed as global shortcuts.
-- The mock HCM HTTP surface is mounted only through a dedicated test-only module rather than the public `AppModule`, but the take-home app still uses mock-backed HCM client implementations for deterministic runtime behavior.
+- The mock HCM HTTP surface stays isolated behind its own `MockHcmHttpModule` and is mounted into the running app only when `READYON_ENABLE_MOCK_HCM_HTTP=true`, while the take-home app continues to use mock-backed HCM client implementations for deterministic runtime behavior.
 
 ### Persistence implementation notes
 
@@ -458,9 +458,9 @@ Status codes:
 
 ### Mock HCM API
 
-The mock HCM HTTP surface is test-only and is not part of the public ReadyOn API contract.
-It is mounted through a dedicated `MockHcmHttpModule` for focused contract tests rather than the public `AppModule`.
-The take-home app still uses mock-backed HCM client implementations internally, so reviewers should treat `/mock-hcm/*` as upstream contract-test routes rather than a second public API.
+The mock HCM HTTP surface is not part of the public ReadyOn API contract.
+It is mounted through a dedicated `MockHcmHttpModule` only when `READYON_ENABLE_MOCK_HCM_HTTP=true`, which keeps it available for local manual testing and focused contract tests without making it part of the default runtime surface.
+The take-home app still uses mock-backed HCM client implementations internally, so reviewers should treat `/mock-hcm/*` as upstream-style helper routes rather than a second public API.
 
 ## 10. HCM Integration Design
 
@@ -478,7 +478,7 @@ ReadyOn uses HCM for:
 2. approval-time deduction submission; and
 3. batch snapshot ingestion.
 
-In this take-home, both runtime HCM clients are backed by the in-repo mock service for deterministic behavior. The separate mock HCM HTTP routes exist only for contract testing of upstream semantics.
+In this take-home, both runtime HCM clients are backed by the in-repo mock service for deterministic behavior. The same mock state can also be exercised over `/mock-hcm/*` when `READYON_ENABLE_MOCK_HCM_HTTP=true`, which makes local Postman testing and upstream-style contract checks share one authoritative mock source.
 
 ### Outbound approval contract
 
@@ -781,13 +781,13 @@ The chosen design keeps module ownership and dependency direction clear without 
 ### K. External standalone mock HCM for all runtime calls vs in-repo mock-backed clients plus dedicated HTTP contract coverage
 
 - Rejected: depending on an always-running external mock server for normal app behavior in the take-home
-- Chosen: mock-backed HCM clients in the app plus a dedicated mock HCM HTTP module for contract-style tests
+- Chosen: mock-backed HCM clients in the app plus a dedicated mock HCM HTTP module for contract-style tests and optional local manual testing
 
 Tradeoff:
 
 An external mock server can look more realistic, but it also adds more moving parts to local setup, makes tests less deterministic, and shifts reviewer effort into environment orchestration rather than design evaluation.
 
-The chosen approach keeps the application deterministic and easy to run while still satisfying the requirement to provide mock HCM endpoints in the automated test suite. The dedicated HTTP mock surface proves the upstream contract behavior, and the in-app mock-backed clients keep the service itself simple to evaluate.
+The chosen approach keeps the application deterministic and easy to run while still satisfying the requirement to provide mock HCM endpoints in the automated test suite. The dedicated HTTP mock surface proves the upstream contract behavior, and the same surface can be mounted locally when manual Postman testing is useful. The in-app mock-backed clients keep the service itself simple to evaluate.
 
 ## 19. Testing Strategy
 

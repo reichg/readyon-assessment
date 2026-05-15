@@ -65,9 +65,39 @@ pnpm start:dev
 
 - Base URL: `http://localhost:3000`
 - Smoke check: `GET /health`
-- Optional overrides: `PORT`, `READYON_DB_PATH`, or `DATABASE_URL=file:/absolute/path/to/readyon.sqlite`
+- The runtime entrypoint auto-loads a repo-root `.env` when present.
+- Shell environment variables still win over `.env` values, which keeps one-off local overrides explicit.
+- Common local settings: `PORT`, `READYON_DB_PATH`, `DATABASE_URL=file:/absolute/path/to/readyon.sqlite`, `READYON_ENABLE_MOCK_HCM_HTTP=true`, and `READYON_TELEMETRY_FORMAT=json|pretty`
+- Telemetry logs remain structured JSON. Use `READYON_TELEMETRY_FORMAT=pretty` for multiline formatted local output, or leave it unset for compact JSON.
+- `.env` files are ignored in this repository. Do not commit secrets or machine-specific values.
 
-This README, `TRD.md`, and `TEST_PLAN.md` describe the shipped repository state. `given-task.md` and `readyon_timeoff_agent_instructions.md` are useful as exercise provenance, but they are not the primary reviewer path.
+### Enable live mock HCM locally
+
+PowerShell:
+
+```powershell
+$env:READYON_ENABLE_MOCK_HCM_HTTP = "true"
+pnpm start:dev
+```
+
+Bash:
+
+```bash
+READYON_ENABLE_MOCK_HCM_HTTP=true pnpm start:dev
+```
+
+These shell examples are useful for one-off overrides when you do not want to change your local `.env`.
+
+With `READYON_ENABLE_MOCK_HCM_HTTP=true`, the same Nest process exposes `/mock-hcm/*` for local Postman testing. Those routes are still not part of the public ReadyOn API, but they do mutate the same in-process mock HCM state used by public balance refresh and approval flows. The default seed is `emp_123` at `loc_001` with `10` available days, and the mock state resets when the process restarts.
+
+One useful manual flow is:
+
+1. `GET /mock-hcm/balances/emp_123/loc_001`
+2. `POST /mock-hcm/balances/emp_123/loc_001/adjust` with `{ "deltaDays": 3 }`
+3. `POST /balances/emp_123/loc_001/refresh`
+4. `GET /balances/emp_123/loc_001`
+
+This README, `TRD.md`, and `TEST_PLAN.md` describe the shipped repository state.
 
 ## Implemented Scope
 
@@ -78,7 +108,7 @@ This README, `TRD.md`, and `TEST_PLAN.md` describe the shipped repository state.
 - Stable public API error envelopes and error codes.
 - Create-time idempotency and approval replay safety.
 - In-process approval serialization keyed by `employeeId + locationId`.
-- Mock-backed HCM behavior for deterministic tests, with a separate `/mock-hcm/*` HTTP surface mounted only in test composition.
+- Mock-backed HCM behavior for deterministic tests, with an opt-in `/mock-hcm/*` HTTP surface for local and evaluator-driven manual testing.
 
 ## API Overview
 
@@ -92,14 +122,14 @@ This README, `TRD.md`, and `TEST_PLAN.md` describe the shipped repository state.
 - `POST /time-off-requests/:id/reject`
 - `POST /hcm/balances/batch`
 
-### Mock HCM endpoints used in tests
+### Mock HCM endpoints for local and test use
 
 - `GET /mock-hcm/balances/:employeeId/:locationId`
 - `POST /mock-hcm/time-off`
 - `POST /mock-hcm/balances/:employeeId/:locationId/adjust`
 - `GET /mock-hcm/balances/batch`
 
-The mock HCM HTTP surface is not part of the public ReadyOn API. It exists to exercise upstream behavior in focused tests.
+The mock HCM HTTP surface is not part of the public ReadyOn API. It is exposed only when `READYON_ENABLE_MOCK_HCM_HTTP=true`, which keeps it available for local Postman testing while leaving the default runtime surface unchanged.
 
 ### Public error envelope
 
@@ -200,7 +230,7 @@ The implementation is organized around clear controller, service, repository, an
    Prisma-backed SQLite repositories own storage access, constraints, and short local transactions.
 
 5. HCM integration
-   Separate HCM balance and time-off clients back the public flows, while the mock HCM HTTP module is used only for test composition.
+   Separate HCM balance and time-off clients back the public flows, while the mock HCM HTTP module can be mounted in local runtime with `READYON_ENABLE_MOCK_HCM_HTTP=true` for Postman and contract-style testing.
 
 6. Shared infrastructure
    Database bootstrap, Prisma lifecycle, HTTP telemetry, and request correlation live in shared infrastructure modules.

@@ -1,0 +1,802 @@
+{
+  "info": {
+    "_postman_id": "b9d96cba-5ce8-4dda-b90b-4fb4c4d83361",
+    "name": "ReadyOn Time-Off Microservice",
+    "description": "Prebuilt requests for the ReadyOn Time-Off Microservice.\n\n- Base URL defaults to http://localhost:3000\n- No auth is required\n- Collection variables are pre-seeded, so a separate Postman environment is optional\n- The Mock HCM folder is non-public and only works when READYON_ENABLE_MOCK_HCM_HTTP=true\n- Create-request flows capture ids into collection variables for follow-up requests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "requestId",
+      "value": "11111111-1111-4111-8111-111111111111",
+      "type": "string"
+    },
+    {
+      "key": "employeeId",
+      "value": "emp_123",
+      "type": "string"
+    },
+    {
+      "key": "locationId",
+      "value": "loc_001",
+      "type": "string"
+    },
+    {
+      "key": "missingEmployeeId",
+      "value": "missing-employee",
+      "type": "string"
+    },
+    {
+      "key": "missingLocationId",
+      "value": "missing-location",
+      "type": "string"
+    },
+    {
+      "key": "requestedDays",
+      "value": "2",
+      "type": "string"
+    },
+    {
+      "key": "idempotencyKey",
+      "value": "idem-postman-create-001",
+      "type": "string"
+    },
+    {
+      "key": "rejectIdempotencyKey",
+      "value": "idem-postman-reject-001",
+      "type": "string"
+    },
+    {
+      "key": "conflictIdempotencyKey",
+      "value": "idem-postman-conflict-001",
+      "type": "string"
+    },
+    {
+      "key": "timeOffRequestId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rejectTimeOffRequestId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "reconciliationSourceVersion",
+      "value": "batch_2026_050",
+      "type": "string"
+    },
+    {
+      "key": "reconciliationEffectiveAt",
+      "value": "2026-01-15T00:00:00.000Z",
+      "type": "string"
+    },
+    {
+      "key": "mockExternalRequestId",
+      "value": "mock-postman-timeoff-001",
+      "type": "string"
+    },
+    {
+      "key": "mockDeltaDays",
+      "value": "3",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Health body is ok', function () {",
+                  "  const responseBodyJson = pm.response.json();",
+                  "  pm.expect(responseBodyJson).to.deep.equal({ status: 'ok' });",
+                  "});",
+                  "pm.test('Valid x-request-id is echoed back', function () {",
+                  "  pm.expect(pm.response.headers.get('x-request-id')).to.equal(pm.collectionVariables.get('requestId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Smoke check for the running service. This route also proves the app echoes a valid x-request-id header."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Balances",
+      "item": [
+        {
+          "name": "GET /balances/:employeeId/:locationId",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/balances/{{employeeId}}/{{locationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["balances", "{{employeeId}}", "{{locationId}}"]
+            },
+            "description": "Returns the latest known local balance projection. This can legitimately return BALANCE_NOT_FOUND until refresh, reconciliation, or approval side effects have created a projection."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /balances/:employeeId/:locationId/refresh",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/balances/{{employeeId}}/{{locationId}}/refresh",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "balances",
+                "{{employeeId}}",
+                "{{locationId}}",
+                "refresh"
+              ]
+            },
+            "description": "Pulls the authoritative HCM balance into the local ReadyOn projection for the current employee and location."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Time-Off Requests",
+      "item": [
+        {
+          "name": "POST /time-off-requests - Create",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create request returns 201 or 200', function () {",
+                  "  pm.expect([200, 201]).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('Save timeOffRequestId from the response body', function () {",
+                  "  const responseBodyJson = pm.response.json();",
+                  "  pm.expect(responseBodyJson.id).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('timeOffRequestId', responseBodyJson.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"locationId\": \"{{locationId}}\",\n  \"requestedDays\": {{requestedDays}},\n  \"idempotencyKey\": \"{{idempotencyKey}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/time-off-requests",
+              "host": ["{{baseUrl}}"],
+              "path": ["time-off-requests"]
+            },
+            "description": "Creates a pending time-off request. On first submission this returns 201; if you resend the same payload with the same idempotencyKey it returns 200 and the original body."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /time-off-requests - Replay Same Create",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Replay returns 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Replay keeps the original request id', function () {",
+                  "  const responseBodyJson = pm.response.json();",
+                  "  pm.expect(responseBodyJson.id).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('timeOffRequestId', responseBodyJson.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"locationId\": \"{{locationId}}\",\n  \"requestedDays\": {{requestedDays}},\n  \"idempotencyKey\": \"{{idempotencyKey}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/time-off-requests",
+              "host": ["{{baseUrl}}"],
+              "path": ["time-off-requests"]
+            },
+            "description": "Run this after the Create request above to demonstrate idempotent replay with the same idempotencyKey and payload."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /time-off-requests/:id",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/time-off-requests/{{timeOffRequestId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["time-off-requests", "{{timeOffRequestId}}"]
+            },
+            "description": "Fetches the last created request. Run the Create request first so timeOffRequestId is populated."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /time-off-requests/:id/approve",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/time-off-requests/{{timeOffRequestId}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["time-off-requests", "{{timeOffRequestId}}", "approve"]
+            },
+            "description": "Approves the current request after re-confirming with HCM. Happy-path approval requires HCM to have enough balance for the employee and location."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /time-off-requests/:id/approve - Replay",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/time-off-requests/{{timeOffRequestId}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["time-off-requests", "{{timeOffRequestId}}", "approve"]
+            },
+            "description": "Run this after a successful approval to show replay-safe approve behavior. The second approval should return the same approved body without a second HCM deduction."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /time-off-requests - Create For Rejection",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create for rejection returns 201 or 200', function () {",
+                  "  pm.expect([200, 201]).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('Save rejectTimeOffRequestId from the response body', function () {",
+                  "  const responseBodyJson = pm.response.json();",
+                  "  pm.expect(responseBodyJson.id).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('rejectTimeOffRequestId', responseBodyJson.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"locationId\": \"{{locationId}}\",\n  \"requestedDays\": {{requestedDays}},\n  \"idempotencyKey\": \"{{rejectIdempotencyKey}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/time-off-requests",
+              "host": ["{{baseUrl}}"],
+              "path": ["time-off-requests"]
+            },
+            "description": "Creates a separate pending request so the reject flow does not reuse the request from the approve flow."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /time-off-requests/:id/reject",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/time-off-requests/{{rejectTimeOffRequestId}}/reject",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "time-off-requests",
+                "{{rejectTimeOffRequestId}}",
+                "reject"
+              ]
+            },
+            "description": "Rejects the separate pending request created above. Reject does not call HCM when the request is still pending."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Reconciliation",
+      "item": [
+        {
+          "name": "POST /hcm/balances/batch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sourceVersion\": \"{{reconciliationSourceVersion}}\",\n  \"effectiveAt\": \"{{reconciliationEffectiveAt}}\",\n  \"balances\": [\n    {\n      \"employeeId\": \"{{employeeId}}\",\n      \"locationId\": \"{{locationId}}\",\n      \"availableDays\": 10\n    },\n    {\n      \"employeeId\": \"emp_456\",\n      \"locationId\": \"loc_002\",\n      \"availableDays\": 6\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/hcm/balances/batch",
+              "host": ["{{baseUrl}}"],
+              "path": ["hcm", "balances", "batch"]
+            },
+            "description": "Public ReadyOn reconciliation endpoint. This ingests a batch snapshot and updates local projections."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Mock HCM (optional; requires READYON_ENABLE_MOCK_HCM_HTTP=true)",
+      "item": [
+        {
+          "name": "GET /mock-hcm/balances/batch",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mock-hcm/balances/batch",
+              "host": ["{{baseUrl}}"],
+              "path": ["mock-hcm", "balances", "batch"]
+            },
+            "description": "Optional upstream-style helper route for local/manual testing only. This folder returns 404 unless READYON_ENABLE_MOCK_HCM_HTTP=true."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /mock-hcm/balances/:employeeId/:locationId",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mock-hcm/balances/{{employeeId}}/{{locationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "mock-hcm",
+                "balances",
+                "{{employeeId}}",
+                "{{locationId}}"
+              ]
+            },
+            "description": "Reads the current mock HCM balance for the selected employee and location."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /mock-hcm/balances/:employeeId/:locationId/adjust",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deltaDays\": {{mockDeltaDays}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mock-hcm/balances/{{employeeId}}/{{locationId}}/adjust",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "mock-hcm",
+                "balances",
+                "{{employeeId}}",
+                "{{locationId}}",
+                "adjust"
+              ]
+            },
+            "description": "Mutates the mock HCM state only. Useful for forcing drift before calling the public refresh route."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /mock-hcm/time-off",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"locationId\": \"{{locationId}}\",\n  \"days\": {{requestedDays}},\n  \"externalRequestId\": \"{{mockExternalRequestId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mock-hcm/time-off",
+              "host": ["{{baseUrl}}"],
+              "path": ["mock-hcm", "time-off"]
+            },
+            "description": "Direct mock-HCM deduction route. This uses externalRequestId as its idempotency key, not the ReadyOn idempotencyKey field."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Error Examples",
+      "item": [
+        {
+          "name": "POST /time-off-requests - Seed Idempotency Conflict",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"locationId\": \"{{locationId}}\",\n  \"requestedDays\": 2,\n  \"idempotencyKey\": \"{{conflictIdempotencyKey}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/time-off-requests",
+              "host": ["{{baseUrl}}"],
+              "path": ["time-off-requests"]
+            },
+            "description": "Run this once before the next request to seed an idempotency key."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /time-off-requests - Reuse Same Key With Different Payload",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 409', function () {",
+                  "  pm.response.to.have.status(409);",
+                  "});",
+                  "pm.test('Returns IDEMPOTENCY_KEY_CONFLICT', function () {",
+                  "  const responseBodyJson = pm.response.json();",
+                  "  pm.expect(responseBodyJson.error.code).to.equal('IDEMPOTENCY_KEY_CONFLICT');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"locationId\": \"{{locationId}}\",\n  \"requestedDays\": 3,\n  \"idempotencyKey\": \"{{conflictIdempotencyKey}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/time-off-requests",
+              "host": ["{{baseUrl}}"],
+              "path": ["time-off-requests"]
+            },
+            "description": "Run this after the seed request above to demonstrate a stable idempotency conflict."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /time-off-requests/:id/approve - Invalid State After Reject",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 409', function () {",
+                  "  pm.response.to.have.status(409);",
+                  "});",
+                  "pm.test('Returns INVALID_REQUEST_STATE', function () {",
+                  "  const responseBodyJson = pm.response.json();",
+                  "  pm.expect(responseBodyJson.error.code).to.equal('INVALID_REQUEST_STATE');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/time-off-requests/{{rejectTimeOffRequestId}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "time-off-requests",
+                "{{rejectTimeOffRequestId}}",
+                "approve"
+              ]
+            },
+            "description": "Run this after the Create For Rejection and Reject requests to demonstrate INVALID_REQUEST_STATE when approving a non-pending request."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /hcm/balances/batch - Duplicate Row Error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Returns DUPLICATE_RECONCILIATION_ROW', function () {",
+                  "  const responseBodyJson = pm.response.json();",
+                  "  pm.expect(responseBodyJson.error.code).to.equal('DUPLICATE_RECONCILIATION_ROW');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestId}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sourceVersion\": \"batch_2026_051\",\n  \"effectiveAt\": \"2026-01-16T00:00:00.000Z\",\n  \"balances\": [\n    {\n      \"employeeId\": \"{{employeeId}}\",\n      \"locationId\": \"{{locationId}}\",\n      \"availableDays\": 5\n    },\n    {\n      \"employeeId\": \"{{employeeId}}\",\n      \"locationId\": \"{{locationId}}\",\n      \"availableDays\": 7\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/hcm/balances/batch",
+              "host": ["{{baseUrl}}"],
+              "path": ["hcm", "balances", "batch"]
+            },
+            "description": "Demonstrates the stable duplicate-row domain error on the public reconciliation route."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

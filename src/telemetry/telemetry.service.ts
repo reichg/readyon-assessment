@@ -2,6 +2,20 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { RequestContextService } from "./request-context.service";
 import type { TelemetryEvent, TelemetryValue } from "./telemetry.types";
 
+const TELEMETRY_FIELD_ORDER = [
+  "timestamp",
+  "level",
+  "event",
+  "component",
+  "operation",
+  "outcome",
+  "durationMs",
+  "requestId",
+] as const;
+
+type TelemetryLogLevel = "info" | "warn" | "error";
+type TelemetryLogFormat = "json" | "pretty";
+
 @Injectable()
 export class TelemetryService {
   private readonly logger = new Logger("Telemetry");
@@ -23,10 +37,11 @@ export class TelemetryService {
     this.write("error", event);
   }
 
-  private write(level: "info" | "warn" | "error", event: TelemetryEvent): void {
+  private write(level: TelemetryLogLevel, event: TelemetryEvent): void {
     const requestId = this.requestContextService.getRequestId();
     const payload: Record<string, TelemetryValue> = {
       timestamp: new Date().toISOString(),
+      level,
       ...event,
     };
 
@@ -34,7 +49,7 @@ export class TelemetryService {
       payload.requestId = requestId;
     }
 
-    const message = JSON.stringify(payload);
+    const message = formatTelemetryMessage(payload);
 
     if (level === "info") {
       this.logger.log(message);
@@ -48,4 +63,42 @@ export class TelemetryService {
 
     this.logger.error(message);
   }
+}
+
+function formatTelemetryMessage(
+  payload: Record<string, TelemetryValue>,
+): string {
+  const orderedPayload = orderTelemetryPayload(payload);
+
+  if (resolveTelemetryLogFormat() === "pretty") {
+    return JSON.stringify(orderedPayload, null, 2);
+  }
+
+  return JSON.stringify(orderedPayload);
+}
+
+function orderTelemetryPayload(
+  payload: Record<string, TelemetryValue>,
+): Record<string, TelemetryValue> {
+  const orderedPayload: Record<string, TelemetryValue> = {};
+
+  for (const key of TELEMETRY_FIELD_ORDER) {
+    if (Object.prototype.hasOwnProperty.call(payload, key)) {
+      orderedPayload[key] = payload[key];
+    }
+  }
+
+  const remainingKeys = Object.keys(payload)
+    .filter((key) => !Object.prototype.hasOwnProperty.call(orderedPayload, key))
+    .sort();
+
+  for (const key of remainingKeys) {
+    orderedPayload[key] = payload[key];
+  }
+
+  return orderedPayload;
+}
+
+function resolveTelemetryLogFormat(): TelemetryLogFormat {
+  return process.env.READYON_TELEMETRY_FORMAT === "pretty" ? "pretty" : "json";
 }

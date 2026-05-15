@@ -44,7 +44,6 @@ Reference documents:
 
 - `TRD.md`
 - `README.md`
-- `readyon_timeoff_agent_instructions.md`
 
 ## Business Risks and Quality Goals
 

@@ -8,6 +8,7 @@ const TRUSTED_REQUEST_ID = "11111111-1111-4111-8111-111111111111";
 const SECOND_TRUSTED_REQUEST_ID = "22222222-2222-4222-8222-222222222222";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TELEMETRY_FORMAT_ENV_KEY = "READYON_TELEMETRY_FORMAT";
 
 class HealthControllerMock {}
 
@@ -236,7 +237,20 @@ describe("HttpTelemetryInterceptor", () => {
 });
 
 describe("TelemetryService", () => {
+  const originalTelemetryFormat = process.env[TELEMETRY_FORMAT_ENV_KEY];
+
+  afterEach(() => {
+    if (originalTelemetryFormat === undefined) {
+      delete process.env[TELEMETRY_FORMAT_ENV_KEY];
+      return;
+    }
+
+    process.env[TELEMETRY_FORMAT_ENV_KEY] = originalTelemetryFormat;
+  });
+
   it("adds request context ids to info logs", () => {
+    delete process.env[TELEMETRY_FORMAT_ENV_KEY];
+
     const requestContextService = new RequestContextService();
     const telemetryService = new TelemetryService(requestContextService);
     const telemetryLogger = (
@@ -268,12 +282,94 @@ describe("TelemetryService", () => {
     expect(payload).toEqual(
       expect.objectContaining({
         event: "telemetry.info",
+        level: "info",
         requestId: TRUSTED_REQUEST_ID,
+      }),
+    );
+    expect(infoLogMessage.startsWith('{"timestamp":')).toBe(true);
+    expect(infoLogMessage).not.toContain("\n");
+  });
+
+  it("supports multiline readable formatting when pretty mode is enabled", () => {
+    process.env[TELEMETRY_FORMAT_ENV_KEY] = "pretty";
+
+    const requestContextService = new RequestContextService();
+    const telemetryService = new TelemetryService(requestContextService);
+    const telemetryLogger = (
+      telemetryService as unknown as {
+        logger: {
+          log: (message: string) => void;
+        };
+      }
+    ).logger;
+    const logSpy = jest.spyOn(telemetryLogger, "log").mockImplementation();
+
+    telemetryService.info({
+      event: "telemetry.pretty",
+      component: "TelemetryService",
+      operation: "info",
+      outcome: "success",
+      durationMs: 3,
+    });
+
+    const infoLogMessage = logSpy.mock.calls[0]?.[0];
+
+    if (!infoLogMessage) {
+      throw new Error("Expected telemetry pretty log output.");
+    }
+
+    expect(infoLogMessage.startsWith('{\n  "timestamp":')).toBe(true);
+    expect(infoLogMessage).toContain("\n");
+
+    expect(JSON.parse(infoLogMessage)).toEqual(
+      expect.objectContaining({
+        event: "telemetry.pretty",
+        level: "info",
+        durationMs: 3,
+      }),
+    );
+  });
+
+  it("falls back to compact json when the telemetry format is unknown", () => {
+    process.env[TELEMETRY_FORMAT_ENV_KEY] = "table";
+
+    const requestContextService = new RequestContextService();
+    const telemetryService = new TelemetryService(requestContextService);
+    const telemetryLogger = (
+      telemetryService as unknown as {
+        logger: {
+          log: (message: string) => void;
+        };
+      }
+    ).logger;
+    const logSpy = jest.spyOn(telemetryLogger, "log").mockImplementation();
+
+    telemetryService.info({
+      event: "telemetry.fallback",
+      component: "TelemetryService",
+      operation: "info",
+      outcome: "success",
+    });
+
+    const infoLogMessage = logSpy.mock.calls[0]?.[0];
+
+    if (!infoLogMessage) {
+      throw new Error("Expected telemetry fallback log output.");
+    }
+
+    expect(infoLogMessage.startsWith('{"timestamp":')).toBe(true);
+    expect(infoLogMessage).not.toContain("\n");
+    expect(JSON.parse(infoLogMessage)).toEqual(
+      expect.objectContaining({
+        event: "telemetry.fallback",
+        level: "info",
       }),
     );
   });
 
   it("writes warn and error logs without a request id when no context exists", () => {
+    delete process.env[TELEMETRY_FORMAT_ENV_KEY];
+
     const requestContextService = new RequestContextService();
     const telemetryService = new TelemetryService(requestContextService);
     const telemetryLogger = (
@@ -307,6 +403,16 @@ describe("TelemetryService", () => {
       throw new Error("Expected telemetry warn and error log output.");
     }
 
+    expect(JSON.parse(warnLogMessage)).toEqual(
+      expect.objectContaining({
+        level: "warn",
+      }),
+    );
+    expect(JSON.parse(errorLogMessage)).toEqual(
+      expect.objectContaining({
+        level: "error",
+      }),
+    );
     expect(JSON.parse(warnLogMessage)).toEqual(
       expect.not.objectContaining({
         requestId: expect.anything(),
