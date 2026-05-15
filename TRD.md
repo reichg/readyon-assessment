@@ -1,5 +1,54 @@
 # Technical Requirements Document
 
+## Table of Contents
+
+- Context and scope
+  - [1. Problem Statement](#1-problem-statement)
+  - [2. Goals](#2-goals)
+  - [3. Non-Goals](#3-non-goals)
+  - [4. User Personas](#4-user-personas)
+  - [5. Requirements](#5-requirements)
+  - [6. Assumptions and Constraints](#6-assumptions-and-constraints)
+- Architecture and interfaces
+  - [7. System Architecture](#7-system-architecture)
+    - [High-level components](#high-level-components)
+    - [Dependency direction](#dependency-direction)
+    - [Persistence implementation notes](#persistence-implementation-notes)
+  - [8. Data Model](#8-data-model)
+  - [9. API Design](#9-api-design)
+    - [Public ReadyOn API](#public-readyon-api)
+    - [Mock HCM API](#mock-hcm-api)
+  - [10. HCM Integration Design](#10-hcm-integration-design)
+    - [HCM responsibilities](#hcm-responsibilities)
+    - [Outbound approval contract](#outbound-approval-contract)
+    - [Mock HCM requirements](#mock-hcm-requirements)
+- Runtime behavior and safety
+  - [11. Request Lifecycle](#11-request-lifecycle)
+    - [Create](#create)
+    - [Approve](#approve)
+    - [Reject](#reject)
+  - [12. Balance Integrity Strategy](#12-balance-integrity-strategy)
+  - [13. Batch Reconciliation Strategy](#13-batch-reconciliation-strategy)
+  - [14. Idempotency Strategy](#14-idempotency-strategy)
+  - [15. Error Handling Strategy](#15-error-handling-strategy)
+  - [16. Race Condition Strategy](#16-race-condition-strategy)
+  - [17. Observability and Logging Strategy](#17-observability-and-logging-strategy)
+- Evaluation and follow-up
+  - [18. Alternatives Considered](#18-alternatives-considered)
+    - [A. ReadyOn as source of truth vs HCM as source of truth](#a-readyon-as-source-of-truth-vs-hcm-as-source-of-truth)
+    - [B. Synchronous HCM confirmation vs asynchronous approval](#b-synchronous-hcm-confirmation-vs-asynchronous-approval)
+    - [C. Local projection reads vs always querying HCM](#c-local-projection-reads-vs-always-querying-hcm)
+    - [D. Realtime-only sync vs realtime plus batch reconciliation](#d-realtime-only-sync-vs-realtime-plus-batch-reconciliation)
+    - [E. Last-write-wins batch updates vs deterministic replay and stale-batch rejection](#e-last-write-wins-batch-updates-vs-deterministic-replay-and-stale-batch-rejection)
+    - [F. Create-time reservation or HCM authorization vs lightweight `PENDING` creation](#f-create-time-reservation-or-hcm-authorization-vs-lightweight-pending-creation)
+    - [G. Single idempotency mechanism or distributed exactly-once semantics vs split retry-safety strategy](#g-single-idempotency-mechanism-or-distributed-exactly-once-semantics-vs-split-retry-safety-strategy)
+    - [H. Optimistic-only concurrency vs keyed serialized approval](#h-optimistic-only-concurrency-vs-keyed-serialized-approval)
+    - [I. REST vs GraphQL or RPC-style command APIs](#i-rest-vs-graphql-or-rpc-style-command-apis)
+    - [J. Broad ports-and-adapters abstraction vs direct repository and HCM adapter dependencies](#j-broad-ports-and-adapters-abstraction-vs-direct-repository-and-hcm-adapter-dependencies)
+    - [K. External standalone mock HCM for all runtime calls vs in-repo mock-backed clients plus dedicated HTTP contract coverage](#k-external-standalone-mock-hcm-for-all-runtime-calls-vs-in-repo-mock-backed-clients-plus-dedicated-http-contract-coverage)
+  - [19. Testing Strategy](#19-testing-strategy)
+  - [20. Known Limitations and Future Work](#20-known-limitations-and-future-work)
+
 ## 1. Problem Statement
 
 ReadyOn needs a backend microservice that manages employee time-off requests while keeping balance integrity across two systems.
@@ -95,40 +144,35 @@ The service must therefore provide a usable local experience without ever treati
 
 1. API layer
    - `BalancesController`
-
-- `TimeOffRequestsController`
-- `ReconciliationController`
-- `HealthController`
+   - `TimeOffRequestsController`
+   - `ReconciliationController`
+   - `HealthController`
 
 2. Application services layer
-
-- `BalanceService`
-- `TimeOffRequestService`
-- `ReconciliationService`
-- `ApprovalConcurrencyGate`
+   - `BalanceService`
+   - `TimeOffRequestService`
+   - `ReconciliationService`
+   - `ApprovalConcurrencyGate`
 
 3. Persistence layer
    - `BalanceRepository`
    - `TimeOffRequestRepository`
-
-- `TimeOffRequestLifecycleRepository`
-- `HcmTransactionAuditRepository`
-- `ReconciliationRunRepository`
-- `ReconciliationLifecycleRepository`
+   - `TimeOffRequestLifecycleRepository`
+   - `HcmTransactionAuditRepository`
+   - `ReconciliationRunRepository`
+   - `ReconciliationLifecycleRepository`
 
 4. Infrastructure layer
-
-- `DatabaseModule`
-- `DatabaseService`
-- `TelemetryService`
-- `HttpTelemetryInterceptor`
+   - `DatabaseModule`
+   - `DatabaseService`
+   - `TelemetryService`
+   - `HttpTelemetryInterceptor`
 
 5. Integration layer
-
-- `HcmBalanceClient`
-- `HcmTimeOffClient`
-- `MockHcmService`
-- `MockHcmHttpModule`
+   - `HcmBalanceClient`
+   - `HcmTimeOffClient`
+   - `MockHcmService`
+   - `MockHcmHttpModule`
 
 6. Shared layer
    - Validation helpers
@@ -626,57 +670,124 @@ This strategy is safe for a single service instance. A multi-instance deployment
 
 ### A. ReadyOn as source of truth vs HCM as source of truth
 
-- Rejected: ReadyOn as source of truth
-- Chosen: HCM as source of truth with a ReadyOn local projection
+- Rejected: ReadyOn as the authoritative balance ledger
+- Chosen: HCM as source of truth with ReadyOn storing a local projection
 
-Reason:
+Tradeoff:
 
-ReadyOn cannot safely out-authorize the canonical HCM balance when external changes can happen independently.
+Making ReadyOn authoritative would simplify some reads and approvals, but it would also require ReadyOn to absorb independent HCM events such as annual refreshes, work anniversary grants, manual corrections, and delayed upstream adjustments without drifting or accidentally over-authorizing leave. In practice that would move the hardest reconciliation burden into ReadyOn and still require reverse synchronization back into HCM.
+
+The chosen design keeps HCM authoritative for entitlement, dimension validity, and final deduction acceptance, while ReadyOn keeps a local projection for fast reads and responsive request creation. ReadyOn still validates inputs and can fail fast when the known local projection is clearly insufficient, but it does not treat the local database as the final approval authority.
 
 ### B. Synchronous HCM confirmation vs asynchronous approval
 
-- Rejected: asynchronous approval with later deduction
-- Chosen: synchronous approval-time HCM confirmation
+- Rejected: asynchronous approval with later HCM deduction, outbox processing, or eventual correction
+- Chosen: synchronous approval-time HCM confirmation with retry-safe recovery
 
-Reason:
+Tradeoff:
 
-The take-home is evaluated on balance integrity. Synchronous confirmation is easier to defend and easier to test rigorously.
+An asynchronous model can improve throughput and reduce user-facing dependency on HCM latency, but it creates a harder consistency story: ReadyOn could show an approved request before HCM has actually accepted the deduction, which then requires compensating transitions, reconciliation-first repair, or a more complex saga/outbox design.
 
-### C. Realtime-only sync vs batch reconciliation
+The chosen flow keeps approval semantics conservative: a request is approved only after HCM confirms the deduction. This is easier to reason about for a take-home, easier to validate under test, and better aligned with the requirement to protect balance integrity. The tradeoff is that approval depends on HCM availability, so ambiguous upstream outcomes fail closed and remain retry-safe rather than being guessed into a final state.
 
-- Rejected: realtime-only sync
-- Chosen: realtime refresh plus batch reconciliation
+### C. Local projection reads vs always querying HCM
 
-Reason:
+- Rejected: live HCM reads for every balance lookup
+- Chosen: local projection for reads plus an explicit HCM-backed refresh path
 
-Real-time calls alone do not repair drift caused by independent HCM updates or partial outages.
+Tradeoff:
 
-### D. Local cached balances vs always querying HCM
+Always reading from HCM would maximize freshness, but it would also make routine balance reads dependent on upstream latency and availability and would weaken the user experience when HCM is slow or temporarily unavailable. It would also remove a local view that can be corrected and inspected during reconciliation scenarios.
 
-- Rejected: always querying HCM for every balance read
-- Chosen: local projection for reads, HCM confirmation for approval
+The chosen design treats `GET /balances` as the latest known local projection, exposes freshness through `lastSyncedAt`, and provides `POST /balances/:employeeId/:locationId/refresh` when the caller wants an authoritative refresh before a decision. Approval still re-confirms with HCM, so local reads optimize UX without becoming the final authorization boundary.
 
-Reason:
+### D. Realtime-only sync vs realtime plus batch reconciliation
 
-This preserves good UX and resilience without weakening approval correctness.
+- Rejected: realtime-only refresh and deduction calls
+- Chosen: realtime HCM interactions plus authoritative batch reconciliation
 
-### E. Optimistic concurrency vs serialized approval
+Tradeoff:
 
-- Rejected: optimistic-only concurrency for phase one
-- Chosen: keyed serialized approval per employee/location
+Realtime calls are necessary for refresh and approval, but they are not sufficient to repair drift. Independent HCM-side changes, missed refreshes, partial outages, or local failures after an upstream success can still leave ReadyOn's projection stale.
 
-Reason:
+The chosen design uses realtime calls for interactive correctness and batch reconciliation for drift repair. This combination gives the service both a responsive path for day-to-day usage and a deterministic correction path when HCM changes outside ReadyOn or when prior operations leave uncertainty.
 
-SQLite and a single-instance service make keyed serialization easier to implement and easier to explain than optimistic conflict retries across upstream network calls.
+### E. Last-write-wins batch updates vs deterministic replay and stale-batch rejection
 
-### F. REST vs alternative API styles
+- Rejected: unconditional batch overwrite or simple last-write-wins reconciliation
+- Chosen: deterministic reconciliation with replay-safe no-op handling and stale-batch rejection
 
+Tradeoff:
+
+Applying every arriving batch would be simple, but it risks overwriting fresher projections with older data and makes correctness depend on delivery order rather than explicit freshness rules. That is especially risky when realtime refresh has already corrected a balance more recently than an older batch snapshot.
+
+The chosen policy treats exact replay of the same batch as a safe no-op and rejects stale or older batches instead of guessing. This keeps reconciliation deterministic, avoids clobbering fresher local projections, and gives reviewers a clearer integrity model than a permissive merge policy would.
+
+### F. Create-time reservation or HCM authorization vs lightweight `PENDING` creation
+
+- Rejected: reserving or deducting balance at create time
+- Chosen: create-time local screening plus `PENDING` request creation, with HCM confirmation at approval
+
+Tradeoff:
+
+Reserving balance during request creation could reduce later approval failures, but it would introduce a more complicated lifecycle around expired reservations, manager rejection, cancellation, and compensation. It would also push HCM dependency into create flows that are otherwise allowed to remain lightweight.
+
+The chosen approach lets ReadyOn reject obviously impossible requests when the known local projection is already insufficient, but otherwise creates a `PENDING` request and defers final entitlement confirmation to approval time. This keeps request creation responsive and idempotent while avoiding false claims that a created request has already secured leave.
+
+### G. Single idempotency mechanism or distributed exactly-once semantics vs split retry-safety strategy
+
+- Rejected: one universal idempotency mechanism or a distributed exactly-once transaction across ReadyOn and HCM
+- Chosen: split retry safety with ReadyOn-owned create idempotency and approval-time HCM replay protection
+
+Tradeoff:
+
+Exactly-once semantics across a local database and an external HCM system would require a heavier distributed coordination model than this take-home needs. A single idempotency mechanism also hides an important distinction: create and approve have different failure modes and different sources of truth.
+
+The chosen design uses client-visible idempotency keys for request creation and a stable external request identity plus audit history for approval retries. That does not eliminate every ambiguous failure mode automatically, but it does make retries converge safely without double deduction and without overstating the guarantee as a distributed transaction.
+
+### H. Optimistic-only concurrency vs keyed serialized approval
+
+- Rejected: optimistic-only retries around approval or long-lived database locking across upstream calls
+- Chosen: keyed serialized approval per `employeeId + locationId` in the single-instance service
+
+Tradeoff:
+
+Optimistic-only concurrency is appealing when the database can cheaply arbitrate conflicts, but this flow includes upstream HCM network calls and approval-side side effects. Holding database transactions open across those calls is undesirable, and optimistic retry logic becomes harder to explain when two approvals are racing against a limited authoritative balance.
+
+The chosen keyed gate keeps the critical approval path simple for SQLite and the single-instance take-home. Approvals that touch the same employee and location are serialized before final HCM confirmation, which is easier to reason about and easier to test than optimistic conflict retries in phase one. The limitation is explicit: this is a single-instance strategy, not a distributed coordination model.
+
+### I. REST vs GraphQL or RPC-style command APIs
+
+- Rejected: GraphQL or custom RPC-style command APIs for phase one
 - Chosen: REST
-- Rejected: alternative API styles for this take-home
 
-Reason:
+Tradeoff:
 
-The prompt explicitly allows REST and the required operations map naturally to clear, testable HTTP endpoints.
+GraphQL could reduce endpoint count and support flexible reads, while RPC-style commands can model workflows like approve and reject directly. Neither is inherently wrong, but this service already has a small, explicit surface made up of resource reads plus command-like transitions.
+
+REST fits the exercise well because balances, requests, refresh, approval, rejection, and reconciliation ingest all map naturally to clear HTTP endpoints with deterministic status codes and easy Supertest coverage. The prompt explicitly permits REST, so choosing it avoided introducing extra transport complexity that would not improve balance integrity.
+
+### J. Broad ports-and-adapters abstraction vs direct repository and HCM adapter dependencies
+
+- Rejected: introducing a separate abstract port for every persistence and HCM interaction in phase one
+- Chosen: keep controllers thin, keep workflow in services, and let services depend on concrete repositories and HCM adapters
+
+Tradeoff:
+
+A broader ports-and-adapters design can make dependency inversion more formal and can help when multiple implementations must be swapped frequently. For this take-home, that extra layer would add indirection without materially improving the core consistency story.
+
+The chosen design keeps module ownership and dependency direction clear without over-abstracting: controllers remain transport-only, services own orchestration, repositories own persistence mapping, and HCM clients own upstream I/O. This keeps the code reviewable while still preserving clean boundaries.
+
+### K. External standalone mock HCM for all runtime calls vs in-repo mock-backed clients plus dedicated HTTP contract coverage
+
+- Rejected: depending on an always-running external mock server for normal app behavior in the take-home
+- Chosen: mock-backed HCM clients in the app plus a dedicated mock HCM HTTP module for contract-style tests
+
+Tradeoff:
+
+An external mock server can look more realistic, but it also adds more moving parts to local setup, makes tests less deterministic, and shifts reviewer effort into environment orchestration rather than design evaluation.
+
+The chosen approach keeps the application deterministic and easy to run while still satisfying the requirement to provide mock HCM endpoints in the automated test suite. The dedicated HTTP mock surface proves the upstream contract behavior, and the in-app mock-backed clients keep the service itself simple to evaluate.
 
 ## 19. Testing Strategy
 
